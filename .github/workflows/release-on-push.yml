@@ -1,4 +1,4 @@
-# При пуше в main: собрать zip и создать/обновить релиз v{Version} (тег создаёт action-gh-release)
+# При пуше в main: следующая версия (patch+1 от последнего релиза), обновление Version в плагине, релиз и коммит [skip ci]
 name: Release on Push
 
 on:
@@ -15,13 +15,38 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get plugin version
+      - name: Compute next version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          V=$(grep "Version:" woo-exchange-quote-gateway.php | head -1 | sed -n 's/.*Version:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' | tr -d ' \r')
-          echo "version=$V" >> $GITHUB_OUTPUT
-          echo "Plugin version: $V"
+          set -e
+          # Текущая версия из заголовка плагина (на случай первого релиза или ручного бумпа)
+          CURRENT=$(grep "Version:" woo-exchange-quote-gateway.php | head -1 | sed -n 's/.*Version:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' | tr -d ' \r')
+          # Последний тег с GitHub (releases/latest)
+          LATEST_TAG=$(curl -sS -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/latest" | sed -n 's/.*"tag_name":[[:space:]]*"v\?\([^"]*\)".*/\1/p')
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+            # Нет релизов — используем версию из плагина
+            NEW_VERSION="$CURRENT"
+          else
+            # Увеличиваем patch: 1.0.3 -> 1.0.4
+            MAJOR=$(echo "$LATEST_TAG" | cut -d. -f1)
+            MINOR=$(echo "$LATEST_TAG" | cut -d. -f2)
+            PATCH=$(echo "$LATEST_TAG" | cut -d. -f3)
+            [ -z "$PATCH" ] && PATCH=0
+            NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Next version: $NEW_VERSION"
+
+      - name: Bump version in plugin file
+        run: |
+          sed -i.bak "s/^\([[:space:]]*\*[[:space:]]*Version:[[:space:]]*\)[0-9][0-9.]*/\1${{ steps.version.outputs.version }}/" woo-exchange-quote-gateway.php
+          rm -f woo-exchange-quote-gateway.php.bak
 
       - name: Build plugin zip
         run: |
@@ -33,7 +58,7 @@ jobs:
           rm -rf staging/woo-exchange-quote-gateway/.git staging/woo-exchange-quote-gateway/.github 2>/dev/null || true
           cd staging && zip -r ../woo-exchange-quote-gateway.zip woo-exchange-quote-gateway
 
-      - name: Create or update Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
@@ -42,3 +67,12 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit version bump and push [skip ci]
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add woo-exchange-quote-gateway.php
+          git diff --staged --quiet && exit 0
+          git commit -m "[skip ci] Bump version to ${{ steps.version.outputs.version }}"
+          git push origin main
