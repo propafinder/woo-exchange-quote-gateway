@@ -1,4 +1,4 @@
-# При пуше в main: обновить тег v{Version} до текущего коммита и создать/обновить релиз с zip
+# При пуше в main: собрать zip и создать/обновить релиз v{Version} (тег создаёт action-gh-release)
 name: Release on Push
 
 on:
@@ -15,8 +15,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Get plugin version
         id: version
@@ -34,20 +32,6 @@ jobs:
           [ -d docs ] && cp -r docs staging/woo-exchange-quote-gateway/
           rm -rf staging/woo-exchange-quote-gateway/.git staging/woo-exchange-quote-gateway/.github 2>/dev/null || true
           cd staging && zip -r ../woo-exchange-quote-gateway.zip woo-exchange-quote-gateway
-
-      - name: Update tag and push
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ -z "$VERSION" ]; then echo "Could not read version"; exit 1; fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git tag -d "v$VERSION" 2>/dev/null || true
-          git push origin ":refs/tags/v$VERSION" 2>/dev/null || true
-          git tag "v$VERSION"
-          git push origin "v$VERSION"
 
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
