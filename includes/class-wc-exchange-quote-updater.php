@@ -1,7 +1,7 @@
 <?php
 /**
- * Проверка обновлений из GitHub (WordPress 5.8+: Update URI + update_plugins_{hostname}).
- * Работает при проверке обновлений (wp-admin или cron), не затрагивает фронт/чекаут.
+ * GitHub-based updates (WordPress 5.8+: Update URI + update_plugins_{hostname}).
+ * Runs only during update checks (wp-admin or cron), not on frontend/checkout.
  *
  * @package WooCommerce_Exchange_Quote_Gateway
  */
@@ -14,11 +14,11 @@ class WC_Exchange_Quote_Updater {
 	const PLUGIN_FILE    = 'woo-exchange-quote-gateway/woo-exchange-quote-gateway.php';
 	const PLUGIN_SLUG    = 'woo-exchange-quote-gateway';
 	const UPDATE_URI     = 'https://github.com/propafinder/woo-exchange-quote-gateway/';
-	const CACHE_KEY     = 'woo_eq_gateway_github_release';
-	const CACHE_TTL     = 43200; // 12 часов
+	const CACHE_KEY      = 'woo_eq_gateway_github_release';
+	const CACHE_TTL      = 43200; // 12 hours
 
 	/**
-	 * Регистрирует фильтры обновлений (только для нашего плагина).
+	 * Register update filters (only for this plugin).
 	 */
 	public static function init() {
 		add_filter('update_plugins_github.com', array( __CLASS__, 'filter_update_plugins' ), 10, 4);
@@ -27,19 +27,23 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Получает данные последнего релиза с GitHub (с кэшем).
+	 * Fetch latest release from GitHub (cached).
 	 *
-	 * @return array|null Данные релиза или null при ошибке.
+	 * @return array|null Release data or null on error.
 	 */
 	public static function get_latest_release() {
 		$cached = get_site_transient(self::CACHE_KEY);
-		if (is_array($cached) && !empty($cached['tag_name'])) {
+		if (is_array($cached) && ! empty($cached['tag_name'])) {
 			return $cached;
 		}
 
 		$response = wp_remote_get(self::GITHUB_API_URL, array(
-			'timeout'    => 10,
-			'user-agent' => 'WooCommerce-Exchange-Quote-Gateway-Plugin',
+			'timeout' => 10,
+			'headers' => array(
+				'Accept'               => 'application/vnd.github+json',
+				'X-GitHub-Api-Version' => '2022-11-28',
+				'User-Agent'           => 'WooCommerce-Exchange-Quote-Gateway-Plugin',
+			),
 		));
 
 		if (is_wp_error($response)) {
@@ -53,7 +57,7 @@ class WC_Exchange_Quote_Updater {
 
 		$body = wp_remote_retrieve_body($response);
 		$data = json_decode($body, true);
-		if (!is_array($data) || empty($data['tag_name'])) {
+		if (! is_array($data) || empty($data['tag_name'])) {
 			return null;
 		}
 
@@ -62,35 +66,36 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Фильтр update_plugins_{hostname}: подставляет данные обновления из GitHub.
+	 * Filter update_plugins_{hostname}: provide update data from GitHub.
+	 * Return only array or false, never void.
 	 *
-	 * @param array|false $update      Текущие данные обновления.
-	 * @param array       $plugin_data Заголовки плагина.
-	 * @param string      $plugin_file Путь к файлу плагина.
-	 * @param array       $locales     Локали.
+	 * @param array|false $update      Current update data.
+	 * @param array       $plugin_data Plugin headers.
+	 * @param string      $plugin_file Plugin file path.
+	 * @param array       $locales     Locales.
 	 * @return array|false
 	 */
 	public static function filter_update_plugins($update, $plugin_data, $plugin_file, $locales) {
-		if (!self::is_our_plugin($plugin_file, $plugin_data)) {
+		if (! self::is_our_plugin($plugin_file, $plugin_data)) {
 			return $update;
 		}
-		if (!empty($update)) {
+		if (! empty($update)) {
 			return $update;
 		}
 
 		$release = self::get_latest_release();
-		if (!$release) {
+		if (! $release) {
 			return $update;
 		}
 
 		$new_version = self::normalize_version($release['tag_name']);
 		$current     = isset($plugin_data['Version']) ? $plugin_data['Version'] : '0';
-		if (!version_compare($current, $new_version, '<')) {
+		if (! version_compare($current, $new_version, '<')) {
 			return false;
 		}
 
 		$package = self::get_release_package_url($release);
-		if (!$package) {
+		if (! $package) {
 			return $update;
 		}
 
@@ -98,35 +103,35 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Подмешивает наше обновление в transient update_plugins (fallback).
+	 * Inject our update into transient update_plugins (fallback when hostname hook is not used).
 	 *
-	 * @param object $value    Значение transient update_plugins.
-	 * @param string $transient Имя transient.
+	 * @param object $value    update_plugins transient value.
+	 * @param string $transient Transient name.
 	 * @return object
 	 */
 	public static function inject_into_update_plugins($value, $transient) {
-		if ($transient !== 'update_plugins' || !is_object($value) || !isset($value->response)) {
+		if ($transient !== 'update_plugins' || ! is_object($value) || ! isset($value->response)) {
 			return $value;
 		}
 		$release = self::get_latest_release();
-		if (!$release) {
+		if (! $release) {
 			return $value;
 		}
 		$new_version = self::normalize_version($release['tag_name']);
 		$package     = self::get_release_package_url($release);
-		if (!$package) {
+		if (! $package) {
 			return $value;
 		}
 		$plugin_file = self::get_our_plugin_file();
-		if (!$plugin_file) {
+		if (! $plugin_file) {
 			return $value;
 		}
-		if (!function_exists('get_plugin_data')) {
+		if (! function_exists('get_plugin_data')) {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
 		$plugin_data = get_plugin_data(WP_PLUGIN_DIR . '/' . $plugin_file, false, false);
 		$current     = isset($plugin_data['Version']) ? $plugin_data['Version'] : '0';
-		if (!version_compare($current, $new_version, '<')) {
+		if (! version_compare($current, $new_version, '<')) {
 			return $value;
 		}
 		$value->response[ $plugin_file ] = self::build_update_object($new_version, $release, $package, $plugin_file);
@@ -134,14 +139,19 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Проверяет, что это наш плагин по пути или по заголовкам.
+	 * Whether this is our plugin (by path or headers).
+	 *
+	 * @param string $plugin_file Plugin file path.
+	 * @param array  $plugin_data Plugin headers.
+	 * @return bool
 	 */
 	private static function is_our_plugin($plugin_file, $plugin_data) {
 		$normalized = is_string($plugin_file) ? str_replace('\\', '/', $plugin_file) : '';
 		if ($normalized === self::PLUGIN_FILE) {
 			return true;
 		}
-		if (!empty($plugin_data['Name']) && $plugin_data['Name'] === 'WooCommerce Exchange Quote — оплата картой (крипта LTC)') {
+		$name = isset($plugin_data['Name']) ? $plugin_data['Name'] : '';
+		if ($name === 'WooCommerce Exchange Quote — оплата картой (крипта LTC)') {
 			return true;
 		}
 		$uri = isset($plugin_data['Update URI']) ? $plugin_data['Update URI'] : '';
@@ -149,17 +159,17 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Возвращает путь к нашему плагину (папка/файл.php) из get_plugins().
+	 * Our plugin file (folder/file.php) from get_plugins().
 	 *
 	 * @return string|null
 	 */
 	private static function get_our_plugin_file() {
-		if (!function_exists('get_plugins')) {
+		if (! function_exists('get_plugins')) {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
 		$all = get_plugins();
 		foreach ($all as $file => $data) {
-			if (!empty($data['Name']) && $data['Name'] === 'WooCommerce Exchange Quote — оплата картой (крипта LTC)') {
+			if (! empty($data['Name']) && $data['Name'] === 'WooCommerce Exchange Quote — оплата картой (крипта LTC)') {
 				return $file;
 			}
 			if (isset($data['Update URI']) && strpos($data['Update URI'], 'github.com/propafinder/woo-exchange-quote-gateway') !== false) {
@@ -170,12 +180,12 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Собирает объект обновления для WP.
+	 * Build update object for WordPress (id must match Update URI).
 	 *
-	 * @param string $new_version
-	 * @param array  $release
-	 * @param string $package
-	 * @param string $plugin_file
+	 * @param string $new_version New version string.
+	 * @param array  $release     GitHub release data.
+	 * @param string $package     ZIP download URL.
+	 * @param string $plugin_file Plugin file path.
 	 * @return object
 	 */
 	private static function build_update_object($new_version, $release, $package, $plugin_file) {
@@ -196,11 +206,11 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Фильтр plugins_api: данные для экрана «Подробности» при обновлении.
+	 * Filter plugins_api: "View details" / plugin information screen.
 	 *
-	 * @param object|false $result Ответ API.
-	 * @param string       $action Действие (plugin_information и т.д.).
-	 * @param object       $args   Аргументы запроса.
+	 * @param object|false $result API result.
+	 * @param string       $action Action (plugin_information etc).
+	 * @param object       $args   Request args.
 	 * @return object|false
 	 */
 	public static function filter_plugins_api($result, $action, $args) {
@@ -213,38 +223,38 @@ class WC_Exchange_Quote_Updater {
 		}
 
 		$release = self::get_latest_release();
-		if (!$release) {
+		if (! $release) {
 			return $result;
 		}
 
-		$version  = self::normalize_version($release['tag_name']);
-		$package  = self::get_release_package_url($release);
+		$version = self::normalize_version($release['tag_name']);
+		$package = self::get_release_package_url($release);
 		$repo_url = 'https://github.com/propafinder/woo-exchange-quote-gateway';
 
 		$info = (object) array(
-			'name'           => 'WooCommerce Exchange Quote — оплата картой (крипта LTC)',
-			'slug'           => self::PLUGIN_SLUG,
-			'version'        => $version,
-			'author'         => 'by <a href="' . esc_url($repo_url) . '">Exchange Quote API</a>',
-			'homepage'       => $repo_url,
-			'download_link'  => $package,
-			'last_updated'   => isset($release['published_at']) ? $release['published_at'] : '',
-			'sections'       => array(
-				'description' => 'Способ оплаты «картой» с курсом из Meld (Revolut), редирект на fluidmoney, HD LTC из Ltub, проверка оплаты по Chain.so/BlockCypher. Обновления с GitHub.',
+			'name'          => 'WooCommerce Exchange Quote — оплата картой (крипта LTC)',
+			'slug'          => self::PLUGIN_SLUG,
+			'version'       => $version,
+			'author'        => 'by <a href="' . esc_url($repo_url) . '">Exchange Quote API</a>',
+			'homepage'      => $repo_url,
+			'download_link' => $package,
+			'last_updated'  => isset($release['published_at']) ? $release['published_at'] : '',
+			'sections'      => array(
+				'description' => 'Card payment with Revolut rate, redirect to Fluid, HD LTC from Ltub, payment verification. Updates from GitHub.',
 				'changelog'   => isset($release['body']) ? $release['body'] : '',
 			),
-			'requires'       => '5.8',
-			'tested'         => '6.7',
-			'requires_php'   => '7.4',
+			'requires'      => '5.8',
+			'tested'        => '6.7',
+			'requires_php'  => '7.4',
 		);
 
 		return $info;
 	}
 
 	/**
-	 * Нормализует версию из тега (убирает префикс v).
+	 * Normalize version from tag (strip v prefix).
 	 *
-	 * @param string $tag_name Например v1.0.1.
+	 * @param string $tag_name e.g. v1.0.2.
 	 * @return string
 	 */
 	private static function normalize_version($tag_name) {
@@ -252,17 +262,17 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Возвращает URL zip-архива из релиза (первый asset с .zip).
+	 * First .zip asset URL from release.
 	 *
-	 * @param array $release Ответ GitHub API.
+	 * @param array $release GitHub API release.
 	 * @return string|null
 	 */
 	private static function get_release_package_url($release) {
-		if (empty($release['assets']) || !is_array($release['assets'])) {
+		if (empty($release['assets']) || ! is_array($release['assets'])) {
 			return null;
 		}
 		foreach ($release['assets'] as $asset) {
-			if (!empty($asset['browser_download_url'])) {
+			if (! empty($asset['browser_download_url'])) {
 				$url = $asset['browser_download_url'];
 				if (substr(strtolower($url), -4) === '.zip') {
 					return $url;

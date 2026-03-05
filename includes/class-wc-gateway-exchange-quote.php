@@ -283,15 +283,15 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                 $order->update_meta_data('_exchange_quote_destination_currency', $quote['destination_currency'] ?? $this->get_option('destination_crypto', 'LTC'));
             }
         }
+        // Один раз при нажатии «Оформить заказ»: URL Fluid с суммой, адресом (walletAddress) и expectedDestinationAmount — как в main.py (payload walletAddress)
+        $fluid_url = $this->build_payment_redirect_url($order, $total, $ltc_address);
+        $order->update_meta_data('_exchange_quote_fluid_redirect_url', $fluid_url);
         $order->save();
 
-        // Статус pending до подтверждения крипты
         $order->update_status('pending', __('Ожидание оплаты (крипто). Клиент перенаправлен на страницу оплаты.', 'woo-exchange-quote-gateway'));
-
-        $fluid_url = $this->build_payment_redirect_url($order, $total, $ltc_address);
         $this->log('Redirect order ' . $order_id . ' to ' . $fluid_url);
 
-        // Сначала показываем страницу с суммой в GBP и LTC, затем редирект на Fluid
+        // Страница «Переход на страницу оплаты» затем редирект на Fluid по сохранённому URL (без повторного вывода адреса)
         $redirect_page = add_query_arg(array(
             'wc-api'   => 'exchange_quote_redirect',
             'order_id' => $order_id,
@@ -320,11 +320,15 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             wp_safe_redirect(wc_get_page_permalink('checkout'));
             exit;
         }
-        $total       = (float) $order->get_total();
-        $currency    = $order->get_currency();
-        $ltc_amount  = $order->get_meta('_exchange_quote_ltc_amount');
-        $ltc_amount  = $ltc_amount !== '' ? (float) $ltc_amount : null;
-        $fluid_url   = $this->build_payment_redirect_url($order, $total, $order->get_meta('_exchange_quote_ltc_address'));
+        $total      = (float) $order->get_total();
+        $currency   = $order->get_currency();
+        $ltc_amount = $order->get_meta('_exchange_quote_ltc_amount');
+        $ltc_amount = $ltc_amount !== '' ? (float) $ltc_amount : null;
+        // Используем URL, собранный при checkout (адрес уже подставлен); fallback — собрать из меты без повторного вывода
+        $fluid_url = $order->get_meta('_exchange_quote_fluid_redirect_url');
+        if ($fluid_url === '' || ! is_string($fluid_url)) {
+            $fluid_url = $this->build_payment_redirect_url($order, $total, $order->get_meta('_exchange_quote_ltc_address'));
+        }
         $redirect_sec = 5;
         $title = __('Переход на страницу оплаты', 'woo-exchange-quote-gateway');
         $line1 = sprintf(
@@ -551,7 +555,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             return $url;
         }
 
-        // Редирект на fluidmoney.xyz: сумма к оплате (GBP), адрес LTC, ожидаемая сумма LTC (если есть)
+        // Редирект на fluidmoney.xyz: сумма (GBP), адрес LTC (walletAddress), ожидаемая сумма LTC при наличии
+        $ltc_address = is_string($ltc_address) ? trim($ltc_address) : '';
         $params = array(
             'sourceCurrencyCode'     => $this->get_option('source_currency', 'GBP'),
             'sourceAmount'           => $amount_gbp,
@@ -560,7 +565,7 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             'countryCode'            => $this->get_option('country_code', 'GB'),
             'serviceProvider'        => 'REVOLUT',
         );
-        if ($ltc_address) {
+        if ($ltc_address !== '') {
             $params['walletAddress'] = $ltc_address;
         }
         if ($amount_ltc !== '') {
