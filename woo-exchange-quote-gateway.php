@@ -27,7 +27,6 @@ function woo_exchange_quote_gateway_init() {
         return;
     }
 
-    require_once __DIR__ . '/includes/class-wc-meld-quotes.php';
     require_once __DIR__ . '/includes/class-wc-gateway-exchange-quote.php';
     require_once __DIR__ . '/includes/class-wc-exchange-quote-verifier.php';
     require_once __DIR__ . '/includes/class-wc-ltc-hd-deriver.php';

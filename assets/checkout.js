@@ -50,12 +50,20 @@
                 $loading.hide();
                 if (data.success && data.data) {
                     var d = data.data;
-                    var msg = wooExchangeQuote.strings.summary
-                        .replace('%1$s', d.source_amount)
-                        .replace('%2$s', d.source_currency)
-                        .replace('%3$s', d.destination_amount.toFixed(4))
-                        .replace('%4$s', d.destination_currency);
-                    $result.html(msg).show();
+                    if (d.no_quote && wooExchangeQuote.strings.no_quote) {
+                        $result.html(wooExchangeQuote.strings.no_quote).show();
+                        $error.hide();
+                    } else if (d.destination_amount != null) {
+                        var msg = wooExchangeQuote.strings.summary
+                            .replace('%1$s', d.source_amount)
+                            .replace('%2$s', d.source_currency)
+                            .replace('%3$s', d.destination_amount.toFixed(4))
+                            .replace('%4$s', d.destination_currency);
+                        $result.html(msg).show();
+                        $error.hide();
+                    } else {
+                        $error.text(d.message || wooExchangeQuote.strings.error).show();
+                    }
                 } else {
                     $error.text(data.data && data.data.message ? data.data.message : wooExchangeQuote.strings.error).show();
                 }

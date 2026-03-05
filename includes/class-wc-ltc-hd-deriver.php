@@ -25,7 +25,8 @@ class WC_Exchange_Quote_LTC_HD_Deriver {
             return '';
         }
         $decoded = self::base58_decode_check($xpub);
-        if ($decoded === null || strlen($decoded) < 82) {
+        // BIP32: 82 байта (4 version + 78 payload) или 78 байт у некоторых кошельков
+        if ($decoded === null || strlen($decoded) < 78) {
             return '';
         }
         $chain_code = substr($decoded, 13, 32);

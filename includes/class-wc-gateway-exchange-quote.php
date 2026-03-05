@@ -28,6 +28,7 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_assets'));
         add_action('wp_ajax_woo_exchange_quote_get_quote', array($this, 'ajax_get_quote'));
         add_action('wp_ajax_nopriv_woo_exchange_quote_get_quote', array($this, 'ajax_get_quote'));
+        add_action('woocommerce_api_exchange_quote_redirect', array($this, 'show_redirect_to_fluid'));
     }
 
     public function init_form_fields() {
@@ -52,24 +53,10 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                 'default'     => __('Оплата картой: вы платите в GBP по курсу Revolut, мы получаем LTC на кошелёк магазина.', 'woo-exchange-quote-gateway'),
                 'desc_tip'    => true,
             ),
-            'meld_session_token' => array(
-                'title'       => __('Токен сессии Meld (рекомендуется)', 'woo-exchange-quote-gateway'),
-                'type'        => 'password',
-                'description' => __('JWT из fluidmoney.xyz (вкладка Сеть → x-crypto-session-token). Котировки запрашиваются напрямую из плагина в Meld API, Python не нужен.', 'woo-exchange-quote-gateway'),
-                'default'     => '',
-                'desc_tip'    => true,
-            ),
-            'meld_api_url' => array(
-                'title'       => __('URL Meld API (если другой)', 'woo-exchange-quote-gateway'),
-                'type'        => 'url',
-                'description' => __('По умолчанию: https://meldcrypto.com/_api/crypto/session/quote. Оставьте пустым для стандартного.', 'woo-exchange-quote-gateway'),
-                'default'     => '',
-                'desc_tip'    => true,
-            ),
             'api_base_url' => array(
                 'title'       => __('URL своего API котировок (опционально)', 'woo-exchange-quote-gateway'),
                 'type'        => 'url',
-                'description' => __('Если не используете Meld напрямую: базовый URL вашего API (ответ как у main.py). Без слэша в конце.', 'woo-exchange-quote-gateway'),
+                'description' => __('Только если нужен живой курс на checkout. Базовый URL вашего API. Пусто — без запроса котировок, переход по сформированной ссылке.', 'woo-exchange-quote-gateway'),
                 'default'     => '',
                 'desc_tip'    => true,
             ),
@@ -204,6 +191,7 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                 'loading' => __('Загрузка курса…', 'woo-exchange-quote-gateway'),
                 'error'   => __('Не удалось получить курс. Проверьте сумму и попробуйте снова.', 'woo-exchange-quote-gateway'),
                 'summary' => __('Сумма к оплате: %1$s %2$s. По текущему курсу (Revolut): %3$s %4$s.', 'woo-exchange-quote-gateway'),
+                'no_quote' => __('После оформления заказа вы будете переведены на страницу оплаты.', 'woo-exchange-quote-gateway'),
             ),
         ));
     }
@@ -219,31 +207,20 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             wp_send_json_error(array('message' => __('Некорректная сумма.', 'woo-exchange-quote-gateway')));
         }
 
-        $provider_filter = array_filter(array_map('trim', explode(',', $this->get_option('provider_filter', 'REVOLUT'))));
-
-        if (trim($this->get_option('meld_session_token', '')) !== '') {
-            $result = $this->fetch_quote_via_meld($amount, '', $provider_filter);
-            if (!empty($result['quotes'][0])) {
-                $best = $result['quotes'][0];
-                wp_send_json_success(array(
-                    'source_amount'        => (float) $best['source_amount'],
-                    'source_currency'      => $best['source_currency_code'],
-                    'destination_amount'   => (float) $best['destination_amount'],
-                    'destination_currency' => $best['destination_currency_code'],
-                    'exchange_rate'       => isset($best['exchange_rate']) ? (float) $best['exchange_rate'] : 0,
-                    'provider'             => isset($best['service_provider']) ? $best['service_provider'] : '',
-                ));
-            }
-            if (!empty($result['error'])) {
-                wp_send_json_error(array('message' => $result['error']));
-            }
-        }
-
         $api_base = $this->get_option('api_base_url');
         if (empty($api_base)) {
-            wp_send_json_error(array('message' => __('Задайте токен Meld или URL своего API котировок.', 'woo-exchange-quote-gateway')));
+            wp_send_json_success(array(
+                'no_quote' => true,
+                'source_amount' => $amount,
+                'source_currency' => $this->get_option('source_currency', 'GBP'),
+                'destination_amount' => null,
+                'destination_currency' => $this->get_option('destination_crypto', 'LTC'),
+                'exchange_rate' => null,
+                'provider' => '',
+            ));
         }
 
+        $provider_filter = array_filter(array_map('trim', explode(',', $this->get_option('provider_filter', 'REVOLUT'))));
         $url = rtrim($api_base, '/') . '/api/v1/quote';
         $body = array(
             'country_code'             => $this->get_option('country_code', 'GB'),
@@ -318,13 +295,70 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         // Статус pending до подтверждения крипты
         $order->update_status('pending', __('Ожидание оплаты (крипто). Клиент перенаправлен на страницу оплаты.', 'woo-exchange-quote-gateway'));
 
-        $redirect_url = $this->build_payment_redirect_url($order, $total, $ltc_address);
-        $this->log('Redirect order ' . $order_id . ' to ' . $redirect_url);
+        $fluid_url = $this->build_payment_redirect_url($order, $total, $ltc_address);
+        $this->log('Redirect order ' . $order_id . ' to ' . $fluid_url);
+
+        // Сначала показываем страницу с суммой в GBP и LTC, затем редирект на Fluid
+        $redirect_page = add_query_arg(array(
+            'wc-api'   => 'exchange_quote_redirect',
+            'order_id' => $order_id,
+            'key'      => $order->get_order_key(),
+        ), home_url('/'));
 
         return array(
             'result'   => 'success',
-            'redirect' => $redirect_url,
+            'redirect' => $redirect_page,
         );
+    }
+
+    /**
+     * Страница перед редиректом на Fluid: отображает сумму в GBP и в LTC, затем перенаправляет на страницу оплаты.
+     * Вызывается по wc-api=exchange_quote_redirect.
+     */
+    public function show_redirect_to_fluid() {
+        $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+        $key      = isset($_GET['key']) ? sanitize_text_field(wp_unslash($_GET['key'])) : '';
+        if (!$order_id || !$key) {
+            wp_safe_redirect(wc_get_page_permalink('checkout'));
+            exit;
+        }
+        $order = wc_get_order($order_id);
+        if (!$order || $order->get_order_key() !== $key) {
+            wp_safe_redirect(wc_get_page_permalink('checkout'));
+            exit;
+        }
+        $total       = (float) $order->get_total();
+        $currency    = $order->get_currency();
+        $ltc_amount  = $order->get_meta('_exchange_quote_ltc_amount');
+        $ltc_amount  = $ltc_amount !== '' ? (float) $ltc_amount : null;
+        $fluid_url   = $this->build_payment_redirect_url($order, $total, $order->get_meta('_exchange_quote_ltc_address'));
+        $redirect_sec = 5;
+        $title = __('Переход на страницу оплаты', 'woo-exchange-quote-gateway');
+        $line1 = sprintf(
+            __('Заказ #%1$s. К оплате: %2$s %3$s.', 'woo-exchange-quote-gateway'),
+            $order_id,
+            wc_price($total, array('currency' => $currency)),
+            $currency
+        );
+        $line2 = $ltc_amount !== null
+            ? sprintf(__('В конвертации: %s LTC.', 'woo-exchange-quote-gateway'), number_format($ltc_amount, 8, '.', ' '))
+            : __('Сумма в LTC будет указана на странице оплаты.', 'woo-exchange-quote-gateway');
+        $go_btn = __('Перейти к оплате', 'woo-exchange-quote-gateway');
+        $wait = sprintf(__('Перенаправление через %d сек…', 'woo-exchange-quote-gateway'), $redirect_sec);
+        nocache_headers();
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
+        echo '<meta http-equiv="refresh" content="' . esc_attr($redirect_sec) . ';url=' . esc_attr($fluid_url) . '">';
+        echo '<title>' . esc_html($title) . '</title>';
+        echo '<style>body{font-family:system-ui,sans-serif;max-width:420px;margin:2rem auto;padding:1.5rem;text-align:center;} .amount{font-size:1.25rem;margin:0.5rem 0;} .btn{display:inline-block;margin-top:1rem;padding:0.75rem 1.5rem;background:#0073aa;color:#fff;text-decoration:none;border-radius:4px;} .btn:hover{background:#005a87;} .wait{color:#666;font-size:0.9rem;margin-top:1rem;}</style>';
+        echo '</head><body>';
+        echo '<h1>' . esc_html($title) . '</h1>';
+        echo '<p class="amount">' . wp_kses_post($line1) . '</p>';
+        echo '<p class="amount">' . esc_html($line2) . '</p>';
+        echo '<p><a class="btn" href="' . esc_url($fluid_url) . '">' . esc_html($go_btn) . '</a></p>';
+        echo '<p class="wait">' . esc_html($wait) . '</p>';
+        echo '</body></html>';
+        exit;
     }
 
     /**
@@ -352,6 +386,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                     $this->log('LTC address from HD API (index ' . $order->get_meta('_exchange_quote_hd_index') . '): ' . $address);
                     return $address;
                 }
+                // При неудаче HD — используем резервный адрес из настроек, чтобы в ссылке fluidmoney был адрес
+                $this->log('HD derive failed for Ltub; using ltc_wallet_address fallback.');
             }
         }
         $address = $this->get_option('ltc_wallet_address', '');
@@ -466,29 +502,14 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     }
 
     /**
-     * Запрос котировки: сначала Meld API из PHP (если задан токен), иначе — свой API (api_base_url).
-     * Формат ответа единый: source_amount, source_currency, destination_amount, destination_currency.
+     * Запрос котировки только через свой API (api_base_url). Без API — возвращает пустой массив.
      */
     protected function fetch_quote($amount, $wallet_address = '') {
-        $provider_filter = array_filter(array_map('trim', explode(',', $this->get_option('provider_filter', 'REVOLUT'))));
-
-        if (trim($this->get_option('meld_session_token', '')) !== '') {
-            $result = $this->fetch_quote_via_meld($amount, $wallet_address, $provider_filter);
-            if (!empty($result['quotes'][0])) {
-                $q = $result['quotes'][0];
-                return array(
-                    'source_amount'        => (float) $q['source_amount'],
-                    'source_currency'      => $q['source_currency_code'],
-                    'destination_amount'   => (float) $q['destination_amount'],
-                    'destination_currency' => $q['destination_currency_code'],
-                );
-            }
-        }
-
         $api_base = $this->get_option('api_base_url');
         if (empty($api_base)) {
             return array();
         }
+        $provider_filter = array_filter(array_map('trim', explode(',', $this->get_option('provider_filter', 'REVOLUT'))));
         $url = rtrim($api_base, '/') . '/api/v1/quote';
         $body = array(
             'country_code'             => $this->get_option('country_code', 'GB'),
@@ -523,34 +544,9 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     }
 
     /**
-     * Запрос котировок напрямую в Meld API (PHP, без Python).
-     * Возвращает массив [ 'success' => bool, 'quotes' => array, 'error' => string ].
-     */
-    protected function fetch_quote_via_meld($amount, $wallet_address, $provider_filter = array()) {
-        $token = trim($this->get_option('meld_session_token', ''));
-        if ($token === '') {
-            return array('success' => false, 'quotes' => array(), 'error' => '');
-        }
-        $url = trim($this->get_option('meld_api_url', ''));
-        $result = WC_Meld_Quotes::fetch_quotes(array(
-            'country_code'             => $this->get_option('country_code', 'GB'),
-            'source_currency_code'     => $this->get_option('source_currency', 'GBP'),
-            'destination_currency_code' => $this->get_option('destination_crypto', 'LTC'),
-            'source_amount'            => $amount,
-            'payment_method_type'      => 'CREDIT_DEBIT_CARD',
-            'wallet_address'           => $wallet_address,
-            'session_token'            => $token,
-            'provider_filter'          => $provider_filter,
-            'meld_api_url'             => $url !== '' ? $url : null,
-        ));
-        $this->log('Meld quote: success=' . ($result['success'] ? '1' : '0') . ' quotes=' . count($result['quotes']));
-        return $result;
-    }
-
-    /**
-     * Формирование ссылки на оплату: сумма (GBP и LTC из ответа Meld), адрес LTC.
+     * Формирование ссылки на оплату: сумма (GBP и LTC при наличии), адрес LTC.
      * При нажатии в корзине/checkout пользователь перекидывается на fluidmoney.xyz (или свой URL).
-     * Плагин далее отслеживает поступление указанной суммы LTC (из Meld API) на этот адрес.
+     * Плагин отслеживает поступление указанной суммы LTC на этот адрес.
      */
     protected function build_payment_redirect_url($order, $amount_gbp, $ltc_address) {
         $amount_ltc = $order->get_meta('_exchange_quote_ltc_amount');
@@ -566,7 +562,7 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             return $url;
         }
 
-        // Редирект на fluidmoney.xyz: сумма к оплате (GBP), адрес LTC, ожидаемая сумма LTC (из Meld)
+        // Редирект на fluidmoney.xyz: сумма к оплате (GBP), адрес LTC, ожидаемая сумма LTC (если есть)
         $params = array(
             'sourceCurrencyCode'     => $this->get_option('source_currency', 'GBP'),
             'sourceAmount'           => $amount_gbp,
