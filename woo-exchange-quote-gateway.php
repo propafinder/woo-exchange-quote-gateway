@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Exchange Quote — оплата картой (крипта LTC)
  * Description: Способ оплаты «картой»: курс обмена из парсера (Revolut), сумма в GBP и LTC из котировки. Редирект на страницу оплаты с подставленными суммой и адресом LTC. Статус заказа — pending до подтверждения крипты.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Exchange Quote API
  * Text Domain: woo-exchange-quote-gateway
  * Domain Path: /languages
@@ -14,6 +14,9 @@
  */
 
 defined('ABSPATH') || exit;
+
+/** URL репозитория на GitHub (релизы: /releases/tag/vX.Y.Z) */
+define('WOO_EXCHANGE_QUOTE_GATEWAY_GITHUB_REPO', 'https://github.com/propafinder/woo-exchange-quote-gateway');
 
 // Обновления из GitHub (Update URI + update_plugins_github.com)
 require_once __DIR__ . '/includes/class-wc-exchange-quote-updater.php';
@@ -63,4 +66,36 @@ function woo_exchange_quote_render_order_ltc_meta($post) {
     if (!$address && $ltc_amt === '') {
         echo '<p>' . esc_html__('No crypto data for this order.', 'woo-exchange-quote-gateway') . '</p>';
     }
+}
+
+// Ссылка на релиз в строке плагина и кликабельная версия → GitHub Releases
+add_filter('plugin_row_meta', 'woo_exchange_quote_plugin_row_meta', 10, 4);
+function woo_exchange_quote_plugin_row_meta($plugin_meta, $plugin_file, $plugin_data, $status) {
+    $basename = 'woo-exchange-quote-gateway/woo-exchange-quote-gateway.php';
+    if ($plugin_file !== $basename) {
+        return $plugin_meta;
+    }
+    $version = isset($plugin_data['Version']) ? $plugin_data['Version'] : '';
+    if ($version !== '') {
+        $release_url = WOO_EXCHANGE_QUOTE_GATEWAY_GITHUB_REPO . '/releases/tag/v' . $version;
+        $plugin_meta[] = '<a href="' . esc_url($release_url) . '" target="_blank" rel="noopener noreferrer">' . esc_html__('Release', 'woo-exchange-quote-gateway') . ' v' . esc_html($version) . '</a>';
+    }
+    return $plugin_meta;
+}
+
+add_action('admin_enqueue_scripts', 'woo_exchange_quote_admin_plugins_script');
+function woo_exchange_quote_admin_plugins_script($hook) {
+    if ($hook !== 'plugins.php') {
+        return;
+    }
+    $plugin_data = get_plugin_data(__DIR__ . '/woo-exchange-quote-gateway.php', false, false);
+    $version = isset($plugin_data['Version']) ? $plugin_data['Version'] : '';
+    if ($version === '') {
+        return;
+    }
+    $release_url = WOO_EXCHANGE_QUOTE_GATEWAY_GITHUB_REPO . '/releases/tag/v' . $version;
+    wp_add_inline_script('jquery', sprintf(
+        '(function(){var u=%s;setTimeout(function(){jQuery("tr:has(a[href*=\"woo-exchange-quote-gateway/woo-exchange-quote-gateway.php\"])").each(function(){var $row=jQuery(this),$cells=$row.children("td");if($cells.length<2)return;var $last=$cells.last();var html=$last.html()||"";if(html&&html.indexOf("<a ")===-1){$last.html(\'<a href="\'+u+\'" target="_blank" rel="noopener noreferrer">\'+html.trim()+\'</a>\');}});},100);})();',
+        json_encode($release_url)
+    ));
 }
