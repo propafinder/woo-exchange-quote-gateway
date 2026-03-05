@@ -38,10 +38,12 @@ jobs:
       - name: Update tag and push
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -z "$VERSION" ]; then echo "Could not read version"; exit 1; fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git tag -d "v$VERSION" 2>/dev/null || true
           git push origin ":refs/tags/v$VERSION" 2>/dev/null || true
           git tag "v$VERSION"
