@@ -70,21 +70,14 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             'use_hd_wallet' => array(
                 'title'       => __('HD Wallet (LTC из Ltub)', 'woo-exchange-quote-gateway'),
                 'type'        => 'checkbox',
-                'label'       => __('Генерировать LTC-адрес из расширенного публичного ключа (Ltub). Каждый заказ — свой адрес.', 'woo-exchange-quote-gateway'),
-                'default'     => 'no',
-                'description' => __('Если включено, адрес берётся из API /api/v1/hd/derive по Ltub и индексу. Иначе — один адрес из поля ниже или CryptoWoo.', 'woo-exchange-quote-gateway'),
+                'label'       => __('Генерировать LTC-адреса только из расширенного публичного ключа (Ltub). Каждый заказ — свой адрес.', 'woo-exchange-quote-gateway'),
+                'default'     => 'yes',
+                'description' => __('Все адреса выводятся из одного Ltub. Локальный вывод в плагине или через API /api/v1/hd/derive. Резервный адрес не используется.', 'woo-exchange-quote-gateway'),
             ),
             'ltc_xpub' => array(
                 'title'       => __('LTC расширенный публичный ключ (Ltub)', 'woo-exchange-quote-gateway'),
                 'type'        => 'text',
-                'description' => __('Ltub... (Litecoin mainnet). Используется только при включённом HD Wallet. Можно менять в настройках.', 'woo-exchange-quote-gateway'),
-                'default'     => '',
-                'desc_tip'    => true,
-            ),
-            'ltc_wallet_address' => array(
-                'title'       => __('LTC адрес кошелька магазина (резерв)', 'woo-exchange-quote-gateway'),
-                'type'        => 'text',
-                'description' => __('Один адрес, если HD выключен и нет CryptoWoo. Или резерв, если API HD недоступен.', 'woo-exchange-quote-gateway'),
+                'description' => __('Единственный источник адресов: Ltub (Litecoin mainnet). Каждый заказ получает свой адрес по индексу 0, 1, 2…', 'woo-exchange-quote-gateway'),
                 'default'     => '',
                 'desc_tip'    => true,
             ),
@@ -362,8 +355,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     }
 
     /**
-     * Адрес LTC для заказа: CryptoWoo → HD Wallet (Ltub через API) → один адрес из настроек → фильтр.
-     * Передаётся в API котировок (wallet_address) и в URL редиректа на оплату.
+     * Адрес LTC для заказа: только из публичного ключа (Ltub).
+     * Источники: фильтр (CryptoWoo и др.) → локальный HD из Ltub → опционально HD API. Резервный адрес не используется.
      */
     protected function get_ltc_address_for_order($order_id, $order) {
         $address = $this->get_ltc_address_from_cryptowoo($order_id, $order);
@@ -374,24 +367,20 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         if ($this->get_option('use_hd_wallet') === 'yes') {
             $xpub = trim($this->get_option('ltc_xpub', ''));
             if ($xpub !== '') {
-                // 1) Локальный вывод в плагине (без main.py)
                 $address = $this->get_ltc_address_from_hd_local($order_id, $order);
                 if ($address !== '') {
                     $this->log('LTC address from HD local (index ' . $order->get_meta('_exchange_quote_hd_index') . '): ' . $address);
                     return $address;
                 }
-                // 2) Опционально: внешний API (например main.py) — только если нужна интеграция с ним
                 $address = $this->get_ltc_address_from_hd_api($order_id, $order);
                 if ($address !== '') {
                     $this->log('LTC address from HD API (index ' . $order->get_meta('_exchange_quote_hd_index') . '): ' . $address);
                     return $address;
                 }
-                // При неудаче HD — используем резервный адрес из настроек, чтобы в ссылке fluidmoney был адрес
-                $this->log('HD derive failed for Ltub; using ltc_wallet_address fallback.');
+                $this->log('HD derive failed for Ltub; no fallback address.');
             }
         }
-        $address = $this->get_option('ltc_wallet_address', '');
-        return apply_filters('woo_exchange_quote_ltc_address', $address, $order_id, $order);
+        return apply_filters('woo_exchange_quote_ltc_address', '', $order_id, $order);
     }
 
     /**
