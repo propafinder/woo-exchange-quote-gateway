@@ -15,7 +15,7 @@ class WC_Exchange_Quote_Updater {
 	const PLUGIN_SLUG    = 'woo-exchange-quote-gateway';
 	const UPDATE_URI     = 'https://github.com/propafinder/woo-exchange-quote-gateway/';
 	const CACHE_KEY      = 'woo_eq_gateway_github_release';
-	const CACHE_TTL      = 43200; // 12 hours
+	const CACHE_TTL      = 3600; // 1 hour (delete transient to force refresh: delete_site_transient('woo_eq_gateway_github_release'))
 
 	/**
 	 * Register update filters (only for this plugin).
@@ -154,8 +154,8 @@ class WC_Exchange_Quote_Updater {
 		if ($name === 'WooCommerce Exchange Quote — оплата картой (крипта LTC)') {
 			return true;
 		}
-		$uri = isset($plugin_data['Update URI']) ? $plugin_data['Update URI'] : '';
-		return (strpos($uri, 'github.com/propafinder/woo-exchange-quote-gateway') !== false);
+		$uri = isset($plugin_data['Update URI']) ? trim((string) $plugin_data['Update URI']) : '';
+		return ($uri !== '' && strpos($uri, 'github.com/propafinder/woo-exchange-quote-gateway') !== false);
 	}
 
 	/**
@@ -172,7 +172,8 @@ class WC_Exchange_Quote_Updater {
 			if (! empty($data['Name']) && $data['Name'] === 'WooCommerce Exchange Quote — оплата картой (крипта LTC)') {
 				return $file;
 			}
-			if (isset($data['Update URI']) && strpos($data['Update URI'], 'github.com/propafinder/woo-exchange-quote-gateway') !== false) {
+			$uri = isset($data['Update URI']) ? trim((string) $data['Update URI']) : '';
+			if ($uri !== '' && strpos($uri, 'github.com/propafinder/woo-exchange-quote-gateway') !== false) {
 				return $file;
 			}
 		}
@@ -189,11 +190,13 @@ class WC_Exchange_Quote_Updater {
 	 * @return object
 	 */
 	private static function build_update_object($new_version, $release, $package, $plugin_file) {
+		// WordPress expects: id (Update URI), slug, plugin, version, new_version, url, package (zip URL)
 		return (object) array(
 			'id'           => self::UPDATE_URI,
 			'slug'         => self::PLUGIN_SLUG,
 			'plugin'       => $plugin_file,
 			'version'      => $new_version,
+			'new_version'  => $new_version,
 			'url'          => isset($release['html_url']) ? $release['html_url'] : 'https://github.com/propafinder/woo-exchange-quote-gateway',
 			'package'      => $package,
 			'icons'        => array(),
