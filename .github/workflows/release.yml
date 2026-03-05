@@ -1,0 +1,36 @@
+# Создание релиза и zip-архива плагина при пуше тега v*
+# Репозиторий: корень = папка плагина (woo-exchange-quote-gateway)
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build plugin zip
+        run: |
+          mkdir -p staging/woo-exchange-quote-gateway
+          for f in *.php *.md; do [ -f "$f" ] && cp "$f" staging/woo-exchange-quote-gateway/; done
+          [ -d includes ] && cp -r includes staging/woo-exchange-quote-gateway/
+          [ -d assets ] && cp -r assets staging/woo-exchange-quote-gateway/
+          [ -d docs ] && cp -r docs staging/woo-exchange-quote-gateway/
+          rm -rf staging/woo-exchange-quote-gateway/.git staging/woo-exchange-quote-gateway/.github 2>/dev/null || true
+          cd staging && zip -r ../woo-exchange-quote-gateway.zip woo-exchange-quote-gateway
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: woo-exchange-quote-gateway.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
