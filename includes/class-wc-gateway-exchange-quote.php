@@ -33,6 +33,7 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         add_action('wp_ajax_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('wp_ajax_nopriv_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('woocommerce_api_exchange_quote_redirect', array($this, 'show_redirect_to_fluid'));
+        // Хук для основных настроек WC (если понадобится); на странице способа оплаты WC вызывает generate_*_html()
         add_action('woocommerce_admin_field_address_log', array($this, 'render_address_log_field'), 10, 1);
     }
 
@@ -393,16 +394,21 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             ? sprintf(__('В конвертации: %s LTC.', 'woo-exchange-quote-gateway'), number_format($ltc_amount, 8, '.', ' '))
             : __('Сумма в LTC будет указана на странице оплаты.', 'woo-exchange-quote-gateway');
         $go_btn = __('Открыть оплату в новой вкладке', 'woo-exchange-quote-gateway');
-        $wait   = sprintf(__('Через %d сек откроется вкладка с оплатой.', 'woo-exchange-quote-gateway'), $redirect_sec);
+        $wait   = sprintf(__('Через %d сек откроется вкладка с оплатой и эта страница перейдёт на «Ожидание оплаты».', 'woo-exchange-quote-gateway'), $redirect_sec);
+        $fallback = __('Если страница не переключилась сама — нажмите сюда: перейти на страницу ожидания оплаты', 'woo-exchange-quote-gateway');
+        $wait_page_url_esc = esc_url($wait_page_url);
 
         nocache_headers();
         header('Content-Type: text/html; charset=utf-8');
+        // Резерв: через 6 сек полная перезагрузка на страницу ожидания (если JS не сработал или контент вставлен в другую страницу)
+        header('Refresh: 6; url=' . $wait_page_url);
         ?>
 <!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title><?php echo esc_html($title); ?></title>
+<meta http-equiv="refresh" content="6;url=<?php echo $wait_page_url_esc; ?>">
 <style>
 body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.4);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;}
 .eq-modal{background:#fff;max-width:420px;width:100%;padding:1.5rem;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2);text-align:center;}
@@ -411,6 +417,8 @@ body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.4);min-hei
 .eq-btn{display:inline-block;margin-top:1rem;padding:0.75rem 1.5rem;background:#0073aa;color:#fff;text-decoration:none;border-radius:4px;border:none;cursor:pointer;font-size:1rem;}
 .eq-btn:hover{background:#005a87;color:#fff;}
 .eq-wait{color:#666;font-size:0.9rem;margin-top:1rem;}
+.eq-fallback{margin-top:1rem;font-size:0.85rem;}
+.eq-fallback a{color:#0073aa;}
 </style>
 </head><body>
 <div class="eq-modal" role="dialog" aria-labelledby="eq-title">
@@ -419,9 +427,15 @@ body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.4);min-hei
   <p class="eq-amount"><?php echo esc_html($line2); ?></p>
   <p><a class="eq-btn" href="<?php echo esc_url($fluid_url); ?>" target="_blank" rel="noopener"><?php echo esc_html($go_btn); ?></a></p>
   <p class="eq-wait"><?php echo esc_html($wait); ?></p>
+  <p class="eq-fallback"><a href="<?php echo $wait_page_url_esc; ?>"><?php echo esc_html($fallback); ?></a></p>
 </div>
 <script>
 (function(){
+  // Если страница открыта во фрейме (например, контент подставлен на checkout) — перейти в верхнее окно, чтобы скрипты и редирект работали.
+  if (window.self !== window.top) {
+    window.top.location.href = window.location.href || window.location.toString();
+    return;
+  }
   var fluidUrl = <?php echo json_encode($fluid_url); ?>;
   var waitPageUrl = <?php echo json_encode($wait_page_url); ?>;
   var sec = <?php echo (int) $redirect_sec; ?>;
@@ -480,6 +494,7 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
   <p class="eq-tx" id="eq-txid" style="display:none;"></p>
   <p class="eq-status" id="eq-status" style="display:none;"></p>
   <p class="eq-redirect" id="eq-redirect" style="display:none;"></p>
+  <p class="eq-tx" style="margin-top:1rem;"><?php esc_html_e('После подтверждения платежа вы будете перенаправлены на страницу «Заказ получен» в магазине.', 'woo-exchange-quote-gateway'); ?></p>
 </div>
 <script>
 (function(){
@@ -784,6 +799,16 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
         ));
         $log = array_slice($log, 0, self::ADDRESS_LOG_MAX_ENTRIES);
         update_option(self::ADDRESS_LOG_OPTION, $log);
+    }
+
+    /**
+     * Генерация HTML для поля типа address_log в настройках способа оплаты.
+     * WC_Settings_API на странице шлюза вызывает именно generate_{type}_html(), а не глобальный хук.
+     */
+    public function generate_address_log_html($key, $data) {
+        ob_start();
+        $this->render_address_log_field($data);
+        return ob_get_clean();
     }
 
     /**

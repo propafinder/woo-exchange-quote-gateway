@@ -68,7 +68,7 @@ function woo_exchange_quote_render_order_ltc_meta($post) {
     }
 }
 
-// Ссылка на релиз в строке плагина и кликабельная версия → GitHub Releases
+// Ссылка на релиз и «Проверить обновления» в строке плагина (как у плагинов с wordpress.org — обновление без перехода на GitHub)
 add_filter('plugin_row_meta', 'woo_exchange_quote_plugin_row_meta', 10, 4);
 function woo_exchange_quote_plugin_row_meta($plugin_meta, $plugin_file, $plugin_data, $status) {
     $basename = 'woo-exchange-quote-gateway/woo-exchange-quote-gateway.php';
@@ -80,7 +80,23 @@ function woo_exchange_quote_plugin_row_meta($plugin_meta, $plugin_file, $plugin_
         $release_url = WOO_EXCHANGE_QUOTE_GATEWAY_GITHUB_REPO . '/releases/tag/v' . $version;
         $plugin_meta[] = '<a href="' . esc_url($release_url) . '" target="_blank" rel="noopener noreferrer">' . esc_html__('Release', 'woo-exchange-quote-gateway') . ' v' . esc_html($version) . '</a>';
     }
+    $check_url = wp_nonce_url(admin_url('plugins.php?eq_check_updates=1'), 'eq_check_updates');
+    $plugin_meta[] = '<a href="' . esc_url($check_url) . '">' . esc_html__('Проверить обновления', 'woo-exchange-quote-gateway') . '</a>';
     return $plugin_meta;
+}
+
+add_action('admin_init', 'woo_exchange_quote_clear_update_cache');
+function woo_exchange_quote_clear_update_cache() {
+    if (! isset($_GET['eq_check_updates']) || ! current_user_can('update_plugins')) {
+        return;
+    }
+    if (! wp_verify_nonce(isset($_GET['_wpnonce']) ? $_GET['_wpnonce'] : '', 'eq_check_updates')) {
+        return;
+    }
+    delete_site_transient('woo_eq_gateway_github_release');
+    delete_site_transient('update_plugins');
+    wp_safe_redirect(admin_url('update-core.php'));
+    exit;
 }
 
 add_action('admin_enqueue_scripts', 'woo_exchange_quote_admin_plugins_script');
