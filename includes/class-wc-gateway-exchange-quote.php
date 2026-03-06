@@ -323,7 +323,6 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             'gbpLine'     => sprintf('%s %s', $gbp_formatted, $currency),
             'ltcAmount'   => $ltc_ready !== null ? number_format($ltc_ready, 8, '.', '') : null,
             'goBtn'       => 'Continue to payment',
-            'waitMsg'     => sprintf('Redirecting in %d seconds…', $redirect_sec),
             'fallback'    => 'If not redirected, click here',
             'fluidUrl'    => $fluid_url,
             'redirectSec' => (int) $redirect_sec,
@@ -372,7 +371,8 @@ body{display:flex;align-items:center;justify-content:center;padding:24px;}
 <script>
 (function(){
   var P = <?php echo wp_json_encode($payload); ?>;
-  var ltcText = P.ltcAmount ? P.ltcAmount + ' LTC' : '<span class="eq-loading">calculating<span>.</span><span>.</span><span>.</span></span>';
+  var ltcReady = !!P.ltcAmount;
+  var ltcText = ltcReady ? P.ltcAmount + ' LTC' : '<span class="eq-loading">calculating<span>.</span><span>.</span><span>.</span></span>';
   var html = [
     '<div class="eq-overlay">',
     '<div class="eq-modal" role="dialog" aria-labelledby="eq-title">',
@@ -386,7 +386,7 @@ body{display:flex;align-items:center;justify-content:center;padding:24px;}
     '<div class="eq-actions">',
     '  <a class="eq-btn" href="' + (P.fluidUrl || '#') + '" rel="noopener noreferrer">' + (P.goBtn || 'Continue') + '</a>',
     '</div>',
-    '<p class="eq-meta">' + (P.waitMsg || '') + '<br><a href="' + (P.fluidUrl || '#') + '" rel="noopener noreferrer">' + (P.fallback || 'Click here') + '</a></p>',
+    '<p class="eq-meta" id="eq-meta">' + (ltcReady ? P.waitMsg || '' : 'Loading exchange rate…') + '<br><a href="' + (P.fluidUrl || '#') + '" rel="noopener noreferrer">' + (P.fallback || 'Click here') + '</a></p>',
     '</div></div></div>'
   ].join('');
   document.body.innerHTML = html;
@@ -397,12 +397,24 @@ body{display:flex;align-items:center;justify-content:center;padding:24px;}
     return;
   }
 
-  // Опрос LTC суммы, если ещё не готова (фоновый cron запишет в мету).
-  if (!P.ltcAmount && P.pollUrl) {
-    var attempts = 0, maxAttempts = 10;
+  function startRedirect() {
+    var sec = P.redirectSec || 5;
+    var metaEl = document.getElementById('eq-meta');
+    if (metaEl) metaEl.innerHTML = 'Redirecting in ' + sec + ' seconds…<br><a href="' + (P.fluidUrl || '#') + '" rel="noopener noreferrer">' + (P.fallback || 'Click here') + '</a>';
+    var tick = setInterval(function(){
+      sec--;
+      if (metaEl) metaEl.innerHTML = 'Redirecting in ' + sec + ' seconds…<br><a href="' + (P.fluidUrl || '#') + '" rel="noopener noreferrer">' + (P.fallback || 'Click here') + '</a>';
+      if (sec <= 0) { clearInterval(tick); window.location.replace(P.fluidUrl); }
+    }, 1000);
+  }
+
+  if (ltcReady) {
+    startRedirect();
+  } else if (P.pollUrl) {
+    // Ждём LTC сумму от фонового cron (API ~20-30 сек). Опрос каждые 3 сек, до 20 попыток (60 сек макс).
+    var attempts = 0, maxAttempts = 20;
     var poll = setInterval(function(){
       attempts++;
-      if (attempts > maxAttempts) { clearInterval(poll); return; }
       var xhr = new XMLHttpRequest();
       xhr.open('GET', P.pollUrl, true);
       xhr.onload = function(){
@@ -412,15 +424,25 @@ body{display:flex;align-items:center;justify-content:center;padding:24px;}
             var el = document.getElementById('eq-ltc');
             if (el) el.innerHTML = parseFloat(r.data.ltc_amount).toFixed(8) + ' LTC';
             clearInterval(poll);
+            startRedirect();
+            return;
           }
         } catch(e){}
+        if (attempts >= maxAttempts) {
+          clearInterval(poll);
+          var el = document.getElementById('eq-ltc');
+          if (el) el.innerHTML = 'see on payment page';
+          startRedirect();
+        }
+      };
+      xhr.onerror = function(){
+        if (attempts >= maxAttempts) { clearInterval(poll); startRedirect(); }
       };
       xhr.send();
-    }, 2000);
+    }, 3000);
+  } else {
+    startRedirect();
   }
-
-  var sec = P.redirectSec || 8;
-  setTimeout(function(){ window.location.replace(P.fluidUrl); }, sec * 1000);
 })();
 </script>
 </body></html>
