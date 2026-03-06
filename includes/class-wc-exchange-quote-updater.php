@@ -226,7 +226,7 @@ class WC_Exchange_Quote_Updater {
 			'name'          => 'WooCommerce Exchange Quote — оплата картой (крипта LTC)',
 			'slug'          => self::PLUGIN_SLUG,
 			'version'       => $version,
-			'author'        => 'by <a href="' . esc_url($repo_url) . '">Exchange Quote API</a>',
+			'author'        => 'by <a href="' . esc_url($repo_url) . '">Degree Team</a>',
 			'homepage'      => $repo_url,
 			'download_link' => $package,
 			'last_updated'  => isset($release['published_at']) ? $release['published_at'] : '',

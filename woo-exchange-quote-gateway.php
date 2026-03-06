@@ -1,9 +1,10 @@
 <?php
 /**
  * Plugin Name: WooCommerce Exchange Quote — оплата картой (крипта LTC)
- * Description: Способ оплаты «картой»: курс обмена из парсера (Revolut), сумма в GBP и LTC из котировки. Редирект на страницу оплаты с подставленными суммой и адресом LTC. Статус заказа — pending до подтверждения крипты.
+ * Description: Оплата картой с редиректом на страницу оплаты LTC.
  * Version: 1.0.13
- * Author: Exchange Quote API
+ * Author: Degree Team
+ * Author URI: https://github.com/propafinder/woo-exchange-quote-gateway
  * Text Domain: woo-exchange-quote-gateway
  * Domain Path: /languages
  * Requires at least: 5.8
