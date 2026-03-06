@@ -347,8 +347,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     }
 
     /**
-     * После checkout: модальное окно → через 5 сек вкладка с Fluid и переход на страницу ожидания оплаты.
-     * step=wait: страница с обратным отсчётом 30 мин, спиннер, адрес, инфо о платеже, опрос статуса, затем редирект на «Заказ получен».
+     * После checkout: одна страница с модальным окном (X GBP = X LTC из котировки) → редирект на Fluid в этой же вкладке.
+     * step=wait: страница ожидания (обратный отсчёт, адрес, опрос статуса) — доступна по прямой ссылке при необходимости.
      */
     public function show_redirect_to_fluid() {
         $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
@@ -371,78 +371,78 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         if ($fluid_url === '' || ! is_string($fluid_url)) {
             $fluid_url = $this->build_payment_redirect_url($order, $total, $order->get_meta('_exchange_quote_ltc_address'));
         }
-        $order_received_url = add_query_arg('key', $order->get_order_key(), wc_get_endpoint_url('order-received', $order_id, wc_get_checkout_url()));
-        $wait_page_url      = add_query_arg(array('wc-api' => 'exchange_quote_redirect', 'order_id' => $order_id, 'key' => $key, 'step' => 'wait'), home_url('/'));
-        $address            = $order->get_meta('_exchange_quote_ltc_address');
 
         $step = isset($_GET['step']) ? sanitize_text_field(wp_unslash($_GET['step'])) : '';
-
         if ($step === 'wait') {
-            $this->render_payment_wait_page($order_id, $order, $address, $order_received_url);
+            $order_received_url = add_query_arg('key', $order->get_order_key(), wc_get_endpoint_url('order-received', $order_id, wc_get_checkout_url()));
+            $this->render_payment_wait_page($order_id, $order, $order->get_meta('_exchange_quote_ltc_address'), $order_received_url);
             return;
         }
 
         $redirect_sec = 5;
         $title        = __('Переход на страницу оплаты', 'woo-exchange-quote-gateway');
-        $line1        = sprintf(
-            __('Заказ #%1$s. К оплате: %2$s %3$s.', 'woo-exchange-quote-gateway'),
-            $order_id,
-            wc_price($total, array('currency' => $currency)),
-            $currency
-        );
-        $line2  = $ltc_amount !== null
-            ? sprintf(__('В конвертации: %s LTC.', 'woo-exchange-quote-gateway'), number_format($ltc_amount, 8, '.', ' '))
-            : __('Сумма в LTC будет указана на странице оплаты.', 'woo-exchange-quote-gateway');
-        $go_btn = __('Открыть оплату в новой вкладке', 'woo-exchange-quote-gateway');
-        $wait   = sprintf(__('Через %d сек откроется вкладка с оплатой и эта страница перейдёт на «Ожидание оплаты».', 'woo-exchange-quote-gateway'), $redirect_sec);
-        $fallback = __('Если страница не переключилась сама — нажмите сюда: перейти на страницу ожидания оплаты', 'woo-exchange-quote-gateway');
-        $wait_page_url_esc = esc_url($wait_page_url);
+        // Из котировки (Meld/API): показываем пользователю X GBP = X LTC
+        $gbp_formatted = number_format($total, 2, '.', ' ');
+        $ltc_formatted = $ltc_amount !== null ? number_format($ltc_amount, 8, '.', ' ') : '';
+        if ($ltc_formatted !== '') {
+            $quote_line = sprintf(
+                __('Заказ #%1$s. По курсу котировки: %2$s %3$s = %4$s LTC.', 'woo-exchange-quote-gateway'),
+                $order_id,
+                $gbp_formatted,
+                $currency,
+                $ltc_formatted
+            );
+        } else {
+            $quote_line = sprintf(
+                __('Заказ #%1$s. К оплате: %2$s %3$s. Сумма в LTC будет на странице оплаты.', 'woo-exchange-quote-gateway'),
+                $order_id,
+                $gbp_formatted,
+                $currency
+            );
+        }
+        $go_btn   = __('Перейти к оплате (Fluid)', 'woo-exchange-quote-gateway');
+        $wait_msg = sprintf(__('Через %d сек вы будете перенаправлены на Fluid для оплаты.', 'woo-exchange-quote-gateway'), $redirect_sec);
+        $fallback = __('Если не перенаправило — нажмите сюда: перейти к оплате', 'woo-exchange-quote-gateway');
+        $fluid_url_esc = esc_url($fluid_url);
 
         nocache_headers();
         header('Content-Type: text/html; charset=utf-8');
-        // Резерв: через 6 сек полная перезагрузка на страницу ожидания (если JS не сработал или контент вставлен в другую страницу)
-        header('Refresh: 6; url=' . $wait_page_url);
+        header('Refresh: ' . ($redirect_sec + 1) . '; url=' . $fluid_url);
         ?>
 <!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title><?php echo esc_html($title); ?></title>
-<meta http-equiv="refresh" content="6;url=<?php echo $wait_page_url_esc; ?>">
+<meta http-equiv="refresh" content="<?php echo (int) $redirect_sec + 1; ?>;url=<?php echo $fluid_url_esc; ?>">
 <style>
-body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.4);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;}
-.eq-modal{background:#fff;max-width:420px;width:100%;padding:1.5rem;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2);text-align:center;}
-.eq-modal h2{margin-top:0;font-size:1.25rem;}
-.eq-amount{margin:0.5rem 0;font-size:1.1rem;}
-.eq-btn{display:inline-block;margin-top:1rem;padding:0.75rem 1.5rem;background:#0073aa;color:#fff;text-decoration:none;border-radius:4px;border:none;cursor:pointer;font-size:1rem;}
-.eq-btn:hover{background:#005a87;color:#fff;}
-.eq-wait{color:#666;font-size:0.9rem;margin-top:1rem;}
+body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.45);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;}
+.eq-modal{background:#fff;max-width:440px;width:100%;padding:1.75rem;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.2);text-align:center;}
+.eq-modal h2{margin:0 0 1rem;font-size:1.25rem;}
+.eq-quote{margin:1rem 0;font-size:1.15rem;font-weight:600;color:#1d2327;}
+.eq-btn{display:inline-block;margin-top:1rem;padding:0.75rem 1.5rem;background:#0073aa;color:#fff!important;text-decoration:none;border-radius:6px;font-size:1rem;}
+.eq-btn:hover{background:#005a87;color:#fff!important;}
+.eq-wait{color:#50575e;font-size:0.9rem;margin-top:1rem;}
 .eq-fallback{margin-top:1rem;font-size:0.85rem;}
 .eq-fallback a{color:#0073aa;}
 </style>
 </head><body>
 <div class="eq-modal" role="dialog" aria-labelledby="eq-title">
   <h2 id="eq-title"><?php echo esc_html($title); ?></h2>
-  <p class="eq-amount"><?php echo wp_kses_post($line1); ?></p>
-  <p class="eq-amount"><?php echo esc_html($line2); ?></p>
-  <p><a class="eq-btn" href="<?php echo esc_url($fluid_url); ?>" target="_blank" rel="noopener"><?php echo esc_html($go_btn); ?></a></p>
-  <p class="eq-wait"><?php echo esc_html($wait); ?></p>
-  <p class="eq-fallback"><a href="<?php echo $wait_page_url_esc; ?>"><?php echo esc_html($fallback); ?></a></p>
+  <p class="eq-quote"><?php echo esc_html($quote_line); ?></p>
+  <p><a class="eq-btn" href="<?php echo $fluid_url_esc; ?>"><?php echo esc_html($go_btn); ?></a></p>
+  <p class="eq-wait"><?php echo esc_html($wait_msg); ?></p>
+  <p class="eq-fallback"><a href="<?php echo $fluid_url_esc; ?>"><?php echo esc_html($fallback); ?></a></p>
 </div>
 <script>
 (function(){
-  // Если страница открыта во фрейме (например, контент подставлен на checkout) — перейти в верхнее окно, чтобы скрипты и редирект работали.
   if (window.self !== window.top) {
     window.top.location.href = window.location.href || window.location.toString();
     return;
   }
   var fluidUrl = <?php echo json_encode($fluid_url); ?>;
-  var waitPageUrl = <?php echo json_encode($wait_page_url); ?>;
   var sec = <?php echo (int) $redirect_sec; ?>;
-  setTimeout(function(){
-    window.open(fluidUrl, '_blank', 'noopener,noreferrer');
-    window.location.href = waitPageUrl;
-  }, sec * 1000);
+  setTimeout(function(){ window.location.href = fluidUrl; }, sec * 1000);
 })();
 </script>
 </body></html>
