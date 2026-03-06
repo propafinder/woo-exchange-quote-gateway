@@ -35,8 +35,6 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         add_action('wp_ajax_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('wp_ajax_nopriv_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('woocommerce_api_exchange_quote_redirect', array($this, 'show_redirect_to_fluid'));
-        // Фоновый запрос котировки (WP cron single event) — чтобы не блокировать checkout.
-        add_action('woo_exchange_quote_async_fetch_quote', array($this, 'async_fetch_quote'), 10, 2);
         // Хук для основных настроек WC (если понадобится); на странице способа оплаты WC вызывает generate_*_html()
         add_action('woocommerce_admin_field_address_log', array($this, 'render_address_log_field'), 10, 1);
     }

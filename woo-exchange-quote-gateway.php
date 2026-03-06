@@ -41,6 +41,56 @@ function woo_exchange_quote_gateway_init() {
     });
 
     WC_Exchange_Quote_Verifier::init();
+
+    // Фоновый запрос котировки (WP cron single event).
+    // Зарегистрирован здесь (не в конструкторе gateway), чтобы работал при cron-запросе
+    // когда WooCommerce не инициализирует payment gateways.
+    add_action('woo_exchange_quote_async_fetch_quote', 'woo_exchange_quote_do_async_fetch', 10, 2);
+}
+
+/**
+ * Обработчик фонового запроса котировки. Получает цену LTC через API и записывает в мету заказа.
+ */
+function woo_exchange_quote_do_async_fetch($order_id, $ltc_address) {
+    $order = wc_get_order($order_id);
+    if (!$order) {
+        return;
+    }
+    $existing = $order->get_meta('_exchange_quote_ltc_amount');
+    if ($existing !== '' && (float) $existing > 0) {
+        return;
+    }
+    $total = (float) $order->get_total();
+    if ($total <= 0) {
+        return;
+    }
+
+    $gateways = WC()->payment_gateways()->payment_gateways();
+    $gateway  = isset($gateways['exchange_quote']) ? $gateways['exchange_quote'] : null;
+    if (!$gateway) {
+        if (function_exists('wc_get_logger')) {
+            wc_get_logger()->debug('async_fetch_quote: gateway not found for order ' . $order_id, array('source' => 'exchange-quote-gateway'));
+        }
+        return;
+    }
+
+    $fetch = new ReflectionMethod($gateway, 'fetch_quote');
+    $fetch->setAccessible(true);
+    $quote = $fetch->invoke($gateway, $total, $ltc_address);
+
+    if (!empty($quote['destination_amount'])) {
+        $order->update_meta_data('_exchange_quote_ltc_amount', $quote['destination_amount']);
+        $order->update_meta_data('_exchange_quote_source_amount', $quote['source_amount']);
+        $order->update_meta_data('_exchange_quote_destination_currency', isset($quote['destination_currency']) ? $quote['destination_currency'] : 'LTC');
+        $order->save();
+        if (function_exists('wc_get_logger')) {
+            wc_get_logger()->debug('Async quote for order ' . $order_id . ': ' . $quote['destination_amount'] . ' LTC', array('source' => 'exchange-quote-gateway'));
+        }
+    } else {
+        if (function_exists('wc_get_logger')) {
+            wc_get_logger()->debug('Async quote for order ' . $order_id . ' failed — LTC amount not saved.', array('source' => 'exchange-quote-gateway'));
+        }
+    }
 }
 
 // Мета-бокс с адресом LTC для заказа (если Woo crypto передаёт адреса)
