@@ -50,8 +50,12 @@
                 $loading.hide();
                 if (data.success && data.data) {
                     var d = data.data;
-                    if (d.no_quote && wooExchangeQuote.strings.no_quote) {
-                        $result.html(wooExchangeQuote.strings.no_quote).show();
+                    if (d.no_quote) {
+                        if (wooExchangeQuote.strings.no_quote) {
+                            $result.html(wooExchangeQuote.strings.no_quote).show();
+                        } else {
+                            $result.hide();
+                        }
                         $error.hide();
                     } else if (d.destination_amount != null) {
                         var src = typeof d.source_amount === 'number' ? d.source_amount.toFixed(2) : d.source_amount;

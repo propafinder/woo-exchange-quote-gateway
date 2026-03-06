@@ -11,6 +11,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     const PAYMENT_METHOD_ID       = 'exchange_quote';
     const ADDRESS_LOG_OPTION      = 'woo_exchange_quote_address_log';
     const ADDRESS_LOG_MAX_ENTRIES = 100;
+    /** URL API котировок по умолчанию (если в настройках пусто). */
+    const DEFAULT_QUOTE_API_URL   = 'https://exchange-quote-api.fly.dev';
 
     public function __construct() {
         $this->id                 = self::PAYMENT_METHOD_ID;
@@ -57,6 +59,13 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                 'type'        => 'textarea',
                 'description' => __('Short text under the payment method. Quote (X GBP = X LTC) is shown below from API.', 'woo-exchange-quote-gateway'),
                 'default'     => __('Pay in GBP at Revolut rate; we receive LTC. Amount at current rate is shown below.', 'woo-exchange-quote-gateway'),
+                'desc_tip'    => true,
+            ),
+            'text_no_rate' => array(
+                'title'       => __('Text when rate is unavailable', 'woo-exchange-quote-gateway'),
+                'type'        => 'text',
+                'description' => __('Shown under the payment method when the quote API does not return a rate. Leave empty to show nothing.', 'woo-exchange-quote-gateway'),
+                'default'     => '',
                 'desc_tip'    => true,
             ),
             'api_base_url' => array(
@@ -173,6 +182,9 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         }
 
         $api_base = $this->get_option('api_base_url');
+        if ($api_base === '' || $api_base === false) {
+            $api_base = self::DEFAULT_QUOTE_API_URL;
+        }
         $src_currency = $this->get_option('source_currency', 'GBP');
         $dst_crypto = $this->get_option('destination_crypto', 'LTC');
         $country = $this->get_option('country_code', 'GB');
@@ -199,7 +211,7 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                 'loading'  => __('Loading rate…', 'woo-exchange-quote-gateway'),
                 'error'   => __('Could not get rate. Check the amount and try again.', 'woo-exchange-quote-gateway'),
                 'summary' => __('At current rate: %1$s %2$s = %3$s %4$s', 'woo-exchange-quote-gateway'),
-                'no_quote' => __('You will be redirected to the payment page after placing the order.', 'woo-exchange-quote-gateway'),
+                'no_quote' => $this->get_option('text_no_rate', ''),
             ),
         ));
     }
@@ -219,6 +231,9 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         }
 
         $api_base = $this->get_option('api_base_url');
+        if ($api_base === '' || $api_base === false) {
+            $api_base = self::DEFAULT_QUOTE_API_URL;
+        }
         if (empty($api_base)) {
             wp_send_json_success(array(
                 'no_quote' => true,
@@ -689,6 +704,9 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
      */
     protected function fetch_quote($amount, $wallet_address = '') {
         $api_base = $this->get_option('api_base_url');
+        if ($api_base === '' || $api_base === false) {
+            $api_base = self::DEFAULT_QUOTE_API_URL;
+        }
         if (empty($api_base)) {
             return array();
         }
