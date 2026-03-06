@@ -14,8 +14,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
 
     public function __construct() {
         $this->id                 = self::PAYMENT_METHOD_ID;
-        $this->method_title       = __('Exchange Quote — оплата картой (LTC)', 'woo-exchange-quote-gateway');
-        $this->method_description = __('Клиент видит способ «картой», курс из парсера (Revolut), сумму в GBP и LTC. После checkout — редирект на страницу оплаты с подставленными суммой и адресом LTC. Заказ в статусе pending до подтверждения крипты.', 'woo-exchange-quote-gateway');
+        $this->method_title       = __('Exchange Quote — card payment (LTC)', 'woo-exchange-quote-gateway');
+        $this->method_description = __('Customer sees card payment with Revolut rate and amount in GBP and LTC. After checkout, redirect to payment page with amount and LTC address. Order stays pending until crypto is confirmed.', 'woo-exchange-quote-gateway');
         $this->has_fields         = true;
         $this->supports           = array('products');
 
@@ -46,24 +46,24 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                 'default' => 'no',
             ),
             'title' => array(
-                'title'       => __('Название способа оплаты', 'woo-exchange-quote-gateway'),
+                'title'       => __('Payment method title', 'woo-exchange-quote-gateway'),
                 'type'        => 'text',
-                'description' => __('Текст, который видит клиент в корзине и на checkout (например: «Оплата картой — курс Revolut»).', 'woo-exchange-quote-gateway'),
-                'default'     => __('Оплата картой (курс Revolut)', 'woo-exchange-quote-gateway'),
+                'description' => __('Title shown in cart and checkout (e.g. Card payment — Revolut rate).', 'woo-exchange-quote-gateway'),
+                'default'     => __('Card payment (Revolut rate)', 'woo-exchange-quote-gateway'),
                 'desc_tip'    => true,
             ),
             'description' => array(
-                'title'       => __('Описание', 'woo-exchange-quote-gateway'),
+                'title'       => __('Description', 'woo-exchange-quote-gateway'),
                 'type'        => 'textarea',
-                'description' => __('Краткое описание под способом оплаты.', 'woo-exchange-quote-gateway'),
-                'default'     => __('Оплата картой: вы платите в GBP по курсу Revolut, мы получаем LTC на кошелёк магазина.', 'woo-exchange-quote-gateway'),
+                'description' => __('Short text under the payment method. Quote (X GBP = X LTC) is shown below from API.', 'woo-exchange-quote-gateway'),
+                'default'     => __('Pay in GBP at Revolut rate; we receive LTC. Amount at current rate is shown below.', 'woo-exchange-quote-gateway'),
                 'desc_tip'    => true,
             ),
             'api_base_url' => array(
-                'title'       => __('URL своего API котировок (опционально)', 'woo-exchange-quote-gateway'),
+                'title'       => __('Quote API URL (required for rate)', 'woo-exchange-quote-gateway'),
                 'type'        => 'url',
-                'description' => __('Только если нужен живой курс на checkout. Базовый URL вашего API. Пусто — без запроса котировок, переход по сформированной ссылке.', 'woo-exchange-quote-gateway'),
-                'default'     => '',
+                'description' => __('Base URL of your Exchange Quote API. Default: Fly.io demo. The API obtains and refreshes the Meld session token automatically.', 'woo-exchange-quote-gateway'),
+                'default'     => 'https://exchange-quote-api.fly.dev',
                 'desc_tip'    => true,
             ),
             'payment_page_url' => array(
@@ -196,10 +196,10 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             'country_code' => $country,
             'provider_filter' => $provider_arr,
             'strings' => array(
-                'loading' => __('Загрузка курса…', 'woo-exchange-quote-gateway'),
-                'error'   => __('Не удалось получить курс. Проверьте сумму и попробуйте снова.', 'woo-exchange-quote-gateway'),
-                'summary' => __('Сумма к оплате: %1$s %2$s. По текущему курсу (Revolut): %3$s %4$s.', 'woo-exchange-quote-gateway'),
-                'no_quote' => __('После оформления заказа вы будете переведены на страницу оплаты.', 'woo-exchange-quote-gateway'),
+                'loading'  => __('Loading rate…', 'woo-exchange-quote-gateway'),
+                'error'   => __('Could not get rate. Check the amount and try again.', 'woo-exchange-quote-gateway'),
+                'summary' => __('At current rate: %1$s %2$s = %3$s %4$s', 'woo-exchange-quote-gateway'),
+                'no_quote' => __('You will be redirected to the payment page after placing the order.', 'woo-exchange-quote-gateway'),
             ),
         ));
     }
@@ -207,12 +207,15 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     /**
      * AJAX: получить котировку для суммы заказа (вызывается с checkout при смене способа оплаты или суммы).
      */
+    /**
+     * AJAX: get quote for checkout. Calls your Quote API (api_base_url); the API obtains and refreshes Meld token automatically.
+     */
     public function ajax_get_quote() {
         check_ajax_referer('woo_exchange_quote_nonce', 'nonce');
 
         $amount = isset($_POST['amount']) ? floatval($_POST['amount']) : 0;
         if ($amount <= 0) {
-            wp_send_json_error(array('message' => __('Некорректная сумма.', 'woo-exchange-quote-gateway')));
+            wp_send_json_error(array('message' => __('Invalid amount.', 'woo-exchange-quote-gateway')));
         }
 
         $api_base = $this->get_option('api_base_url');
@@ -245,18 +248,15 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             'body'    => wp_json_encode($body),
         ));
 
-        $this->log('Quote request: ' . $url . ' body=' . wp_json_encode($body));
+        $this->log('Quote request: ' . $url);
         if (is_wp_error($resp)) {
-            $this->log('Quote error: ' . $resp->get_error_message());
             wp_send_json_error(array('message' => $resp->get_error_message()));
         }
 
         $code = wp_remote_retrieve_response_code($resp);
         $json = json_decode(wp_remote_retrieve_body($resp), true);
-        $this->log('Quote response code=' . $code);
-
         if ($code !== 200 || empty($json['success']) || empty($json['quotes'][0])) {
-            $msg = isset($json['error']) ? $json['error'] : __('Котировки недоступны.', 'woo-exchange-quote-gateway');
+            $msg = isset($json['error']) ? $json['error'] : __('Quotes unavailable.', 'woo-exchange-quote-gateway');
             wp_send_json_error(array('message' => $msg));
         }
 
@@ -266,7 +266,7 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             'source_currency'      => $best['source_currency_code'],
             'destination_amount'   => (float) $best['destination_amount'],
             'destination_currency' => $best['destination_currency_code'],
-            'exchange_rate'       => isset($best['exchange_rate']) ? (float) $best['exchange_rate'] : 0,
+            'exchange_rate'        => isset($best['exchange_rate']) ? (float) $best['exchange_rate'] : 0,
             'provider'             => isset($best['service_provider']) ? $best['service_provider'] : '',
         ));
     }
@@ -685,7 +685,7 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
     }
 
     /**
-     * Запрос котировки только через свой API (api_base_url). Без API — возвращает пустой массив.
+     * Fetch quote for order (process_payment). Calls your Quote API; the API obtains and refreshes Meld token automatically.
      */
     protected function fetch_quote($amount, $wallet_address = '') {
         $api_base = $this->get_option('api_base_url');

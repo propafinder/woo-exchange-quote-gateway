@@ -54,10 +54,11 @@
                         $result.html(wooExchangeQuote.strings.no_quote).show();
                         $error.hide();
                     } else if (d.destination_amount != null) {
+                        var src = typeof d.source_amount === 'number' ? d.source_amount.toFixed(2) : d.source_amount;
                         var msg = wooExchangeQuote.strings.summary
-                            .replace('%1$s', d.source_amount)
+                            .replace('%1$s', src)
                             .replace('%2$s', d.source_currency)
-                            .replace('%3$s', d.destination_amount.toFixed(4))
+                            .replace('%3$s', d.destination_amount.toFixed(8))
                             .replace('%4$s', d.destination_currency);
                         $result.html(msg).show();
                         $error.hide();
