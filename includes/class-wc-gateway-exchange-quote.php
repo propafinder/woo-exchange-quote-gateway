@@ -13,6 +13,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     const ADDRESS_LOG_MAX_ENTRIES = 100;
     /** URL API котировок по умолчанию (если в настройках пусто). */
     const DEFAULT_QUOTE_API_URL   = 'https://exchange-quote-api.fly.dev';
+    /** Таймаут запроса котировки (сек). API может отвечать долго (Playwright/Meld). */
+    const QUOTE_REQUEST_TIMEOUT  = 30;
 
     public function __construct() {
         $this->id                 = self::PAYMENT_METHOD_ID;
@@ -258,14 +260,20 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         );
 
         $resp = wp_remote_post($url, array(
-            'timeout' => 15,
+            'timeout' => self::QUOTE_REQUEST_TIMEOUT,
             'headers' => array('Content-Type' => 'application/json'),
             'body'    => wp_json_encode($body),
         ));
 
         $this->log('Quote request: ' . $url);
         if (is_wp_error($resp)) {
-            wp_send_json_error(array('message' => $resp->get_error_message()));
+            $err_msg = $resp->get_error_message();
+            $this->log('Quote API error: ' . $err_msg);
+            // Пользователю — понятное сообщение вместо сырого cURL/таймаута.
+            if (strpos($err_msg, 'timed out') !== false || strpos($err_msg, 'cURL error 28') !== false) {
+                $err_msg = __('Сервис котировок временно недоступен или отвечает медленно. Попробуйте ещё раз через минуту.', 'woo-exchange-quote-gateway');
+            }
+            wp_send_json_error(array('message' => $err_msg));
         }
 
         $code = wp_remote_retrieve_response_code($resp);
@@ -744,11 +752,14 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
             $body['wallet_address'] = $wallet_address;
         }
         $resp = wp_remote_post($url, array(
-            'timeout' => 15,
+            'timeout' => self::QUOTE_REQUEST_TIMEOUT,
             'headers' => array('Content-Type' => 'application/json'),
             'body'    => wp_json_encode($body),
         ));
         if (is_wp_error($resp) || wp_remote_retrieve_response_code($resp) !== 200) {
+            if (is_wp_error($resp)) {
+                $this->log('fetch_quote error: ' . $resp->get_error_message());
+            }
             return array();
         }
         $json = json_decode(wp_remote_retrieve_body($resp), true);
