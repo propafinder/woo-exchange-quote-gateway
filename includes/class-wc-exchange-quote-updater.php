@@ -2,6 +2,7 @@
 /**
  * GitHub-based updates (WordPress 5.8+: Update URI + update_plugins_{hostname}).
  * Runs only during update checks (wp-admin or cron), not on frontend/checkout.
+ * FIXED: robust plugin detection (Update URI / path / name), slug fallback for plugins_api.
  *
  * @package WooCommerce_Exchange_Quote_Gateway
  */
@@ -14,8 +15,8 @@ class WC_Exchange_Quote_Updater {
 	const PLUGIN_FILE    = 'woo-exchange-quote-gateway/woo-exchange-quote-gateway.php';
 	const PLUGIN_SLUG    = 'woo-exchange-quote-gateway';
 	const UPDATE_URI     = 'https://github.com/propafinder/woo-exchange-quote-gateway/';
-	const CACHE_KEY      = 'woo_eq_gateway_github_release';
-	const CACHE_TTL      = 3600; // 1 hour (delete transient to force refresh: delete_site_transient('woo_eq_gateway_github_release'))
+	const CACHE_KEY     = 'woo_eq_gateway_github_release';
+	const CACHE_TTL     = 43200; // 12 hours (was 3600; delete_site_transient('woo_eq_gateway_github_release') to force refresh)
 
 	/**
 	 * Register update filters (only for this plugin).
@@ -38,11 +39,11 @@ class WC_Exchange_Quote_Updater {
 		}
 
 		$response = wp_remote_get(self::GITHUB_API_URL, array(
-			'timeout' => 10,
-			'headers' => array(
+			'timeout'    => 10,
+			'user-agent' => 'WooCommerce-Exchange-Quote-Gateway-Plugin',
+			'headers'    => array(
 				'Accept'               => 'application/vnd.github+json',
 				'X-GitHub-Api-Version' => '2022-11-28',
-				'User-Agent'           => 'WooCommerce-Exchange-Quote-Gateway-Plugin',
 			),
 		));
 
@@ -68,12 +69,6 @@ class WC_Exchange_Quote_Updater {
 	/**
 	 * Filter update_plugins_{hostname}: provide update data from GitHub.
 	 * Return only array or false, never void.
-	 *
-	 * @param array|false $update      Current update data.
-	 * @param array       $plugin_data Plugin headers.
-	 * @param string      $plugin_file Plugin file path.
-	 * @param array       $locales     Locales.
-	 * @return array|false
 	 */
 	public static function filter_update_plugins($update, $plugin_data, $plugin_file, $locales) {
 		if (! self::is_our_plugin($plugin_file, $plugin_data)) {
@@ -104,10 +99,6 @@ class WC_Exchange_Quote_Updater {
 
 	/**
 	 * Inject our update into transient update_plugins (fallback when hostname hook is not used).
-	 *
-	 * @param object $value    update_plugins transient value.
-	 * @param string $transient Transient name.
-	 * @return object
 	 */
 	public static function inject_into_update_plugins($value, $transient) {
 		if ($transient !== 'update_plugins' || ! is_object($value) || ! isset($value->response)) {
@@ -139,29 +130,28 @@ class WC_Exchange_Quote_Updater {
 	}
 
 	/**
-	 * Whether this is our plugin (by path or headers).
-	 *
-	 * @param string $plugin_file Plugin file path.
-	 * @param array  $plugin_data Plugin headers.
-	 * @return bool
+	 * Whether this is our plugin (by path, Update URI, or name).
+	 * FIXED: prefer Update URI and path; name match flexible to avoid encoding/dash issues.
 	 */
 	private static function is_our_plugin($plugin_file, $plugin_data) {
 		$normalized = is_string($plugin_file) ? str_replace('\\', '/', $plugin_file) : '';
 		if ($normalized === self::PLUGIN_FILE) {
 			return true;
 		}
-		$name = isset($plugin_data['Name']) ? $plugin_data['Name'] : '';
-		if ($name === 'WooCommerce Exchange Quote — оплата картой (крипта LTC)') {
+		if ($normalized !== '' && strpos($normalized, 'woo-exchange-quote-gateway') !== false) {
 			return true;
 		}
 		$uri = isset($plugin_data['Update URI']) ? trim((string) $plugin_data['Update URI']) : '';
-		return ($uri !== '' && strpos($uri, 'github.com/propafinder/woo-exchange-quote-gateway') !== false);
+		if ($uri !== '' && strpos($uri, 'github.com/propafinder/woo-exchange-quote-gateway') !== false) {
+			return true;
+		}
+		$name = isset($plugin_data['Name']) ? (string) $plugin_data['Name'] : '';
+		return (strpos($name, 'Exchange Quote') !== false || strpos($name, 'woo-exchange-quote') !== false);
 	}
 
 	/**
 	 * Our plugin file (folder/file.php) from get_plugins().
-	 *
-	 * @return string|null
+	 * FIXED: prefer Update URI, then path containing slug.
 	 */
 	private static function get_our_plugin_file() {
 		if (! function_exists('get_plugins')) {
@@ -169,11 +159,19 @@ class WC_Exchange_Quote_Updater {
 		}
 		$all = get_plugins();
 		foreach ($all as $file => $data) {
-			if (! empty($data['Name']) && $data['Name'] === 'WooCommerce Exchange Quote — оплата картой (крипта LTC)') {
-				return $file;
-			}
 			$uri = isset($data['Update URI']) ? trim((string) $data['Update URI']) : '';
 			if ($uri !== '' && strpos($uri, 'github.com/propafinder/woo-exchange-quote-gateway') !== false) {
+				return $file;
+			}
+		}
+		foreach ($all as $file => $data) {
+			if (strpos($file, 'woo-exchange-quote-gateway/') === 0) {
+				return $file;
+			}
+		}
+		foreach ($all as $file => $data) {
+			$name = isset($data['Name']) ? (string) $data['Name'] : '';
+			if (strpos($name, 'Exchange Quote') !== false) {
 				return $file;
 			}
 		}
@@ -182,21 +180,14 @@ class WC_Exchange_Quote_Updater {
 
 	/**
 	 * Build update object for WordPress (id must match Update URI).
-	 *
-	 * @param string $new_version New version string.
-	 * @param array  $release     GitHub release data.
-	 * @param string $package     ZIP download URL.
-	 * @param string $plugin_file Plugin file path.
-	 * @return object
+	 * Structure aligned with working wc-payment-rotator updater.
 	 */
 	private static function build_update_object($new_version, $release, $package, $plugin_file) {
-		// WordPress expects: id (Update URI), slug, plugin, version, new_version, url, package (zip URL)
 		return (object) array(
 			'id'           => self::UPDATE_URI,
 			'slug'         => self::PLUGIN_SLUG,
 			'plugin'       => $plugin_file,
 			'version'      => $new_version,
-			'new_version'  => $new_version,
 			'url'          => isset($release['html_url']) ? $release['html_url'] : 'https://github.com/propafinder/woo-exchange-quote-gateway',
 			'package'      => $package,
 			'icons'        => array(),
@@ -210,18 +201,15 @@ class WC_Exchange_Quote_Updater {
 
 	/**
 	 * Filter plugins_api: "View details" / plugin information screen.
-	 *
-	 * @param object|false $result API result.
-	 * @param string       $action Action (plugin_information etc).
-	 * @param object       $args   Request args.
-	 * @return object|false
+	 * FIXED: accept slug that contains our identifier (WP may pass different slug).
 	 */
 	public static function filter_plugins_api($result, $action, $args) {
 		if ($action !== 'plugin_information') {
 			return $result;
 		}
-		$slug = isset($args->slug) ? $args->slug : '';
-		if ($slug !== self::PLUGIN_SLUG) {
+		$slug = isset($args->slug) ? trim((string) $args->slug) : '';
+		$is_our_slug = ($slug === self::PLUGIN_SLUG || strpos($slug, 'exchange-quote') !== false || strpos($slug, 'woo-exchange-quote-gateway') !== false);
+		if (! $is_our_slug) {
 			return $result;
 		}
 
@@ -230,8 +218,8 @@ class WC_Exchange_Quote_Updater {
 			return $result;
 		}
 
-		$version = self::normalize_version($release['tag_name']);
-		$package = self::get_release_package_url($release);
+		$version  = self::normalize_version($release['tag_name']);
+		$package  = self::get_release_package_url($release);
 		$repo_url = 'https://github.com/propafinder/woo-exchange-quote-gateway';
 
 		$info = (object) array(
@@ -254,22 +242,10 @@ class WC_Exchange_Quote_Updater {
 		return $info;
 	}
 
-	/**
-	 * Normalize version from tag (strip v prefix).
-	 *
-	 * @param string $tag_name e.g. v1.0.2.
-	 * @return string
-	 */
 	private static function normalize_version($tag_name) {
 		return is_string($tag_name) ? ltrim($tag_name, 'v') : '0';
 	}
 
-	/**
-	 * First .zip asset URL from release.
-	 *
-	 * @param array $release GitHub API release.
-	 * @return string|null
-	 */
 	private static function get_release_package_url($release) {
 		if (empty($release['assets']) || ! is_array($release['assets'])) {
 			return null;

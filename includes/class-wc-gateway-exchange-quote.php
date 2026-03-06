@@ -380,41 +380,32 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         }
 
         $redirect_sec = 5;
-        $title        = __('Переход на страницу оплаты', 'woo-exchange-quote-gateway');
-        // Из котировки (Meld/API): показываем пользователю X GBP = X LTC
         $gbp_formatted = number_format($total, 2, '.', ' ');
         $ltc_formatted = $ltc_amount !== null ? number_format($ltc_amount, 8, '.', ' ') : '';
-        if ($ltc_formatted !== '') {
-            $quote_line = sprintf(
-                __('Заказ #%1$s. По курсу котировки: %2$s %3$s = %4$s LTC.', 'woo-exchange-quote-gateway'),
-                $order_id,
-                $gbp_formatted,
-                $currency,
-                $ltc_formatted
-            );
-        } else {
-            $quote_line = sprintf(
-                __('Заказ #%1$s. К оплате: %2$s %3$s. Сумма в LTC будет на странице оплаты.', 'woo-exchange-quote-gateway'),
-                $order_id,
-                $gbp_formatted,
-                $currency
-            );
-        }
-        $go_btn   = __('Перейти к оплате (Fluid)', 'woo-exchange-quote-gateway');
-        $wait_msg = sprintf(__('Через %d сек вы будете перенаправлены на Fluid для оплаты.', 'woo-exchange-quote-gateway'), $redirect_sec);
-        $fallback = __('Если не перенаправило — нажмите сюда: перейти к оплате', 'woo-exchange-quote-gateway');
-        $fluid_url_esc = esc_url($fluid_url);
+
+        // Данные для генерации страницы в браузере из blob (прокладка: без реферера при переходе на Fluid).
+        $payload = array(
+            'title'       => 'Redirect to payment',
+            'quoteLine'   => $ltc_formatted !== ''
+                ? sprintf('Order #%s. Quote: %s %s = %s LTC.', $order_id, $gbp_formatted, $currency, $ltc_formatted)
+                : sprintf('Order #%s. Pay: %s %s. LTC amount on payment page.', $order_id, $gbp_formatted, $currency),
+            'goBtn'       => 'Continue to payment (Fluid)',
+            'waitMsg'     => sprintf('Redirecting in %d seconds…', $redirect_sec),
+            'fallback'    => 'If not redirected, click here',
+            'fluidUrl'    => $fluid_url,
+            'redirectSec' => (int) $redirect_sec,
+        );
 
         nocache_headers();
         header('Content-Type: text/html; charset=utf-8');
-        header('Refresh: ' . ($redirect_sec + 1) . '; url=' . $fluid_url);
+        header('Referrer-Policy: no-referrer');
         ?>
 <!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title><?php echo esc_html($title); ?></title>
-<meta http-equiv="refresh" content="<?php echo (int) $redirect_sec + 1; ?>;url=<?php echo $fluid_url_esc; ?>">
+<meta name="referrer" content="no-referrer">
+<title>Redirect</title>
 <style>
 body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.45);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;}
 .eq-modal{background:#fff;max-width:440px;width:100%;padding:1.75rem;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.2);text-align:center;}
@@ -427,22 +418,27 @@ body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.45);min-he
 .eq-fallback a{color:#0073aa;}
 </style>
 </head><body>
-<div class="eq-modal" role="dialog" aria-labelledby="eq-title">
-  <h2 id="eq-title"><?php echo esc_html($title); ?></h2>
-  <p class="eq-quote"><?php echo esc_html($quote_line); ?></p>
-  <p><a class="eq-btn" href="<?php echo $fluid_url_esc; ?>"><?php echo esc_html($go_btn); ?></a></p>
-  <p class="eq-wait"><?php echo esc_html($wait_msg); ?></p>
-  <p class="eq-fallback"><a href="<?php echo $fluid_url_esc; ?>"><?php echo esc_html($fallback); ?></a></p>
-</div>
 <script>
 (function(){
+  var payload = <?php echo wp_json_encode($payload); ?>;
+  var htmlBlob = [
+    '<div class="eq-modal" role="dialog" aria-labelledby="eq-title">',
+    '  <h2 id="eq-title">' + (payload.title || 'Redirect to payment') + '</h2>',
+    '  <p class="eq-quote">' + (payload.quoteLine || '') + '</p>',
+    '  <p><a class="eq-btn" href="' + (payload.fluidUrl || '#') + '" rel="noopener noreferrer">' + (payload.goBtn || 'Continue') + '</a></p>',
+    '  <p class="eq-wait">' + (payload.waitMsg || '') + '</p>',
+    '  <p class="eq-fallback"><a href="' + (payload.fluidUrl || '#') + '" rel="noopener noreferrer">' + (payload.fallback || 'Click here') + '</a></p>',
+    '</div>'
+  ].join('');
+  document.body.innerHTML = htmlBlob;
+  document.title = payload.title || 'Redirect';
+  var fluidUrl = payload.fluidUrl;
+  var sec = payload.redirectSec || 5;
   if (window.self !== window.top) {
     window.top.location.href = window.location.href || window.location.toString();
     return;
   }
-  var fluidUrl = <?php echo json_encode($fluid_url); ?>;
-  var sec = <?php echo (int) $redirect_sec; ?>;
-  setTimeout(function(){ window.location.href = fluidUrl; }, sec * 1000);
+  setTimeout(function(){ window.location.replace(fluidUrl); }, sec * 1000);
 })();
 </script>
 </body></html>
