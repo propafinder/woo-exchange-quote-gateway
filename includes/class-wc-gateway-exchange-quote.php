@@ -178,27 +178,15 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         }
 
         $total = (float) $order->get_total();
-        $currency = $order->get_currency();
-        $api_base = $this->get_option('api_base_url');
 
-        // Даём CryptoWoo / другим плагинам возможность записать адрес в мету заказа до запроса котировки и редиректа
         do_action('woo_exchange_quote_before_get_ltc_address', $order_id, $order);
         $ltc_address = $this->get_ltc_address_for_order($order_id, $order);
 
-        // Сохраняем адрес и сумму LTC в мету заказа (для отображения в админке и для Woo crypto)
         if ($ltc_address) {
             $order->update_meta_data('_exchange_quote_ltc_address', $ltc_address);
         }
 
-        if ($total > 0) {
-            $quote = $this->fetch_quote($total, $ltc_address);
-            if (!empty($quote['destination_amount'])) {
-                $order->update_meta_data('_exchange_quote_ltc_amount', $quote['destination_amount']);
-                $order->update_meta_data('_exchange_quote_source_amount', $quote['source_amount']);
-                $order->update_meta_data('_exchange_quote_destination_currency', $quote['destination_currency'] ?? $this->get_option('destination_crypto', 'LTC'));
-            }
-        }
-        // Один раз при нажатии «Оформить заказ»: URL Fluid с суммой, адресом (walletAddress) и expectedDestinationAmount — как в main.py (payload walletAddress)
+        // Котировку НЕ запрашиваем синхронно — это до 30 сек ожидания; Fluid сам покажет курс.
         $fluid_url = $this->build_payment_redirect_url($order, $total, $ltc_address);
         $order->update_meta_data('_exchange_quote_fluid_redirect_url', $fluid_url);
         $order->save();
@@ -209,7 +197,6 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             $this->log_generated_address($order, $ltc_address);
         }
 
-        // Страница «Переход на страницу оплаты» затем редирект на Fluid по сохранённому URL (без повторного вывода адреса)
         $redirect_page = add_query_arg(array(
             'wc-api'   => 'exchange_quote_redirect',
             'order_id' => $order_id,
@@ -263,11 +250,9 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             exit;
         }
 
-        $total      = (float) $order->get_total();
-        $currency   = $order->get_currency();
-        $ltc_amount = $order->get_meta('_exchange_quote_ltc_amount');
-        $ltc_amount = $ltc_amount !== '' ? (float) $ltc_amount : null;
-        $fluid_url  = $order->get_meta('_exchange_quote_fluid_redirect_url');
+        $total     = (float) $order->get_total();
+        $currency  = $order->get_currency();
+        $fluid_url = $order->get_meta('_exchange_quote_fluid_redirect_url');
         if ($fluid_url === '' || ! is_string($fluid_url)) {
             $fluid_url = $this->build_payment_redirect_url($order, $total, $order->get_meta('_exchange_quote_ltc_address'));
         }
@@ -279,17 +264,13 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             return;
         }
 
-        $redirect_sec = 5;
+        $redirect_sec  = 5;
         $gbp_formatted = number_format($total, 2, '.', ' ');
-        $ltc_formatted = $ltc_amount !== null ? number_format($ltc_amount, 8, '.', ' ') : '';
 
-        // Данные для генерации страницы в браузере из blob (прокладка: без реферера при переходе на Fluid).
         $payload = array(
             'title'       => 'Redirect to payment',
-            'quoteLine'   => $ltc_formatted !== ''
-                ? sprintf('Order #%s. Quote: %s %s = %s LTC.', $order_id, $gbp_formatted, $currency, $ltc_formatted)
-                : sprintf('Order #%s. Pay: %s %s. LTC amount on payment page.', $order_id, $gbp_formatted, $currency),
-            'goBtn'       => 'Continue to payment (Fluid)',
+            'quoteLine'   => sprintf('Order #%s — %s %s', $order_id, $gbp_formatted, $currency),
+            'goBtn'       => 'Continue to payment',
             'waitMsg'     => sprintf('Redirecting in %d seconds…', $redirect_sec),
             'fallback'    => 'If not redirected, click here',
             'fluidUrl'    => $fluid_url,
