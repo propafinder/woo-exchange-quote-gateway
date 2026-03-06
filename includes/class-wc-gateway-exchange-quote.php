@@ -20,7 +20,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         $this->id                 = self::PAYMENT_METHOD_ID;
         $this->method_title       = __('Exchange Quote — card payment (LTC)', 'woo-exchange-quote-gateway');
         $this->method_description = __('Customer sees card payment with Revolut rate and amount in GBP and LTC. After checkout, redirect to payment page with amount and LTC address. Order stays pending until crypto is confirmed.', 'woo-exchange-quote-gateway');
-        $this->has_fields         = true;
+        // На чекауте показываем только текст-описание из админки (без динамических котировок/курса).
+        $this->has_fields         = false;
         $this->supports           = array('products');
 
         $this->init_form_fields();
@@ -31,9 +32,6 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         $this->enabled     = $this->get_option('enabled');
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
-        add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_assets'));
-        add_action('wp_ajax_woo_exchange_quote_get_quote', array($this, 'ajax_get_quote'));
-        add_action('wp_ajax_nopriv_woo_exchange_quote_get_quote', array($this, 'ajax_get_quote'));
         add_action('wp_ajax_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('wp_ajax_nopriv_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('woocommerce_api_exchange_quote_redirect', array($this, 'show_redirect_to_fluid'));
@@ -50,17 +48,17 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                 'default' => 'no',
             ),
             'title' => array(
-                'title'       => __('Payment method title', 'woo-exchange-quote-gateway'),
+                'title'       => __('Заголовок способа оплаты', 'woo-exchange-quote-gateway'),
                 'type'        => 'text',
-                'description' => __('Title shown in cart and checkout (e.g. Card payment — Revolut rate).', 'woo-exchange-quote-gateway'),
-                'default'     => __('Card payment (Revolut rate)', 'woo-exchange-quote-gateway'),
+                'description' => __('Заголовок, который видит клиент на странице оформления заказа.', 'woo-exchange-quote-gateway'),
+                'default'     => __('Оплата картой (курс Revolut)', 'woo-exchange-quote-gateway'),
                 'desc_tip'    => true,
             ),
             'description' => array(
-                'title'       => __('Description', 'woo-exchange-quote-gateway'),
+                'title'       => __('Описание (текст на чекауте)', 'woo-exchange-quote-gateway'),
                 'type'        => 'textarea',
-                'description' => __('Short text under the payment method. Quote (X GBP = X LTC) is shown below from API.', 'woo-exchange-quote-gateway'),
-                'default'     => __('Pay in GBP at Revolut rate; we receive LTC. Amount at current rate is shown below.', 'woo-exchange-quote-gateway'),
+                'description' => __('Текст под способом оплаты на странице оформления заказа. Без котировок и курса.', 'woo-exchange-quote-gateway'),
+                'default'     => __('Оплата картой: вы платите в GBP по курсу Revolut, мы получаем LTC на кошелёк магазина.', 'woo-exchange-quote-gateway'),
                 'desc_tip'    => true,
             ),
             'text_no_rate' => array(
@@ -171,127 +169,6 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         if ($this->description) {
             echo wp_kses_post(wpautop($this->description));
         }
-        echo '<div id="woo-exchange-quote-summary" class="woo-exchange-quote-summary" style="margin-top:10px;padding:12px;background:#f8f8f8;border-radius:6px;display:none;">';
-        echo '<p class="woo-eq-loading">' . esc_html__('Загрузка курса…', 'woo-exchange-quote-gateway') . '</p>';
-        echo '<p class="woo-eq-result" style="display:none;"></p>';
-        echo '<p class="woo-eq-error" style="display:none;color:#b32d2e;"></p>';
-        echo '</div>';
-    }
-
-    public function enqueue_checkout_assets() {
-        if (!is_checkout() || !$this->is_available()) {
-            return;
-        }
-
-        $api_base = $this->get_option('api_base_url');
-        if ($api_base === '' || $api_base === false) {
-            $api_base = self::DEFAULT_QUOTE_API_URL;
-        }
-        $src_currency = $this->get_option('source_currency', 'GBP');
-        $dst_crypto = $this->get_option('destination_crypto', 'LTC');
-        $country = $this->get_option('country_code', 'GB');
-        $provider = $this->get_option('provider_filter', 'REVOLUT');
-        $provider_arr = array_map('trim', explode(',', $provider));
-        $provider_arr = array_filter($provider_arr);
-
-        wp_enqueue_script(
-            'woo-exchange-quote-checkout',
-            plugin_dir_url(dirname(__FILE__)) . 'assets/checkout.js',
-            array('jquery'),
-            '1.0.0',
-            true
-        );
-        wp_localize_script('woo-exchange-quote-checkout', 'wooExchangeQuote', array(
-            'ajax_url'     => admin_url('admin-ajax.php'),
-            'nonce'        => wp_create_nonce('woo_exchange_quote_nonce'),
-            'api_base_url' => $api_base ? rtrim($api_base, '/') : '',
-            'source_currency' => $src_currency,
-            'destination_crypto' => $dst_crypto,
-            'country_code' => $country,
-            'provider_filter' => $provider_arr,
-            'strings' => array(
-                'loading'  => __('Loading rate…', 'woo-exchange-quote-gateway'),
-                'error'   => __('Could not get rate. Check the amount and try again.', 'woo-exchange-quote-gateway'),
-                'summary' => __('At current rate: %1$s %2$s = %3$s %4$s', 'woo-exchange-quote-gateway'),
-                'no_quote' => $this->get_option('text_no_rate', ''),
-            ),
-        ));
-    }
-
-    /**
-     * AJAX: получить котировку для суммы заказа (вызывается с checkout при смене способа оплаты или суммы).
-     */
-    /**
-     * AJAX: get quote for checkout. Calls your Quote API (api_base_url); the API obtains and refreshes Meld token automatically.
-     */
-    public function ajax_get_quote() {
-        check_ajax_referer('woo_exchange_quote_nonce', 'nonce');
-
-        $amount = isset($_POST['amount']) ? floatval($_POST['amount']) : 0;
-        if ($amount <= 0) {
-            wp_send_json_error(array('message' => __('Invalid amount.', 'woo-exchange-quote-gateway')));
-        }
-
-        $api_base = $this->get_option('api_base_url');
-        if ($api_base === '' || $api_base === false) {
-            $api_base = self::DEFAULT_QUOTE_API_URL;
-        }
-        if (empty($api_base)) {
-            wp_send_json_success(array(
-                'no_quote' => true,
-                'source_amount' => $amount,
-                'source_currency' => $this->get_option('source_currency', 'GBP'),
-                'destination_amount' => null,
-                'destination_currency' => $this->get_option('destination_crypto', 'LTC'),
-                'exchange_rate' => null,
-                'provider' => '',
-            ));
-        }
-
-        $provider_filter = array_filter(array_map('trim', explode(',', $this->get_option('provider_filter', 'REVOLUT'))));
-        $url = rtrim($api_base, '/') . '/api/v1/quote';
-        $body = array(
-            'country_code'             => $this->get_option('country_code', 'GB'),
-            'source_currency_code'     => $this->get_option('source_currency', 'GBP'),
-            'destination_currency_code' => $this->get_option('destination_crypto', 'LTC'),
-            'source_amount'             => $amount,
-            'payment_method_type'      => 'CREDIT_DEBIT_CARD',
-            'provider_filter'          => $provider_filter,
-        );
-
-        $resp = wp_remote_post($url, array(
-            'timeout' => self::QUOTE_REQUEST_TIMEOUT,
-            'headers' => array('Content-Type' => 'application/json'),
-            'body'    => wp_json_encode($body),
-        ));
-
-        $this->log('Quote request: ' . $url);
-        if (is_wp_error($resp)) {
-            $err_msg = $resp->get_error_message();
-            $this->log('Quote API error: ' . $err_msg);
-            // Пользователю — понятное сообщение вместо сырого cURL/таймаута.
-            if (strpos($err_msg, 'timed out') !== false || strpos($err_msg, 'cURL error 28') !== false) {
-                $err_msg = __('Сервис котировок временно недоступен или отвечает медленно. Попробуйте ещё раз через минуту.', 'woo-exchange-quote-gateway');
-            }
-            wp_send_json_error(array('message' => $err_msg));
-        }
-
-        $code = wp_remote_retrieve_response_code($resp);
-        $json = json_decode(wp_remote_retrieve_body($resp), true);
-        if ($code !== 200 || empty($json['success']) || empty($json['quotes'][0])) {
-            $msg = isset($json['error']) ? $json['error'] : __('Quotes unavailable.', 'woo-exchange-quote-gateway');
-            wp_send_json_error(array('message' => $msg));
-        }
-
-        $best = $json['quotes'][0];
-        wp_send_json_success(array(
-            'source_amount'        => (float) $best['source_amount'],
-            'source_currency'      => $best['source_currency_code'],
-            'destination_amount'   => (float) $best['destination_amount'],
-            'destination_currency' => $best['destination_currency_code'],
-            'exchange_rate'        => isset($best['exchange_rate']) ? (float) $best['exchange_rate'] : 0,
-            'provider'             => isset($best['service_provider']) ? $best['service_provider'] : '',
-        ));
     }
 
     public function process_payment($order_id) {
