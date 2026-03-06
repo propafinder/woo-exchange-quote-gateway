@@ -190,19 +190,24 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
 
         $fluid_url = $this->build_payment_redirect_url($order, $total, $ltc_address);
         $order->update_meta_data('_exchange_quote_fluid_redirect_url', $fluid_url);
+
+        // Заказ уже в pending (создан WooCommerce). Сохраняем мету и добавляем заметку.
+        // Статус изменит верификатор: processing/completed (оплачен) или failed/cancelled.
+        $order->add_order_note(__('Ожидание оплаты (крипто). Клиент перенаправлен на страницу оплаты.', 'woo-exchange-quote-gateway'));
         $order->save();
-
-        // Котировку запрашиваем в фоне (WP cron) — покупатель не ждёт 30 сек.
-        // Результат (LTC amount) сохранится в мету и верификатор подхватит.
-        if ($total > 0) {
-            wp_schedule_single_event(time(), 'woo_exchange_quote_async_fetch_quote', array($order_id, $ltc_address));
-            spawn_cron();
-        }
-
-        $order->update_status('pending', __('Ожидание оплаты (крипто). Клиент перенаправлен на страницу оплаты.', 'woo-exchange-quote-gateway'));
         $this->log('Redirect order ' . $order_id . ' to ' . $fluid_url);
         if ($ltc_address !== '') {
             $this->log_generated_address($order, $ltc_address);
+        }
+
+        // Фоновый запрос котировки — не блокирует checkout. Обёрнуто в try/catch на случай проблем с cron.
+        try {
+            if ($total > 0) {
+                wp_schedule_single_event(time(), 'woo_exchange_quote_async_fetch_quote', array($order_id, $ltc_address));
+                spawn_cron();
+            }
+        } catch (\Throwable $e) {
+            $this->log('spawn_cron error (non-critical): ' . $e->getMessage());
         }
 
         $redirect_page = add_query_arg(array(
