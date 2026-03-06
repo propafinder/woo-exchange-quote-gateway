@@ -8,7 +8,9 @@ defined('ABSPATH') || exit;
 
 class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
 
-    const PAYMENT_METHOD_ID = 'exchange_quote';
+    const PAYMENT_METHOD_ID       = 'exchange_quote';
+    const ADDRESS_LOG_OPTION      = 'woo_exchange_quote_address_log';
+    const ADDRESS_LOG_MAX_ENTRIES = 100;
 
     public function __construct() {
         $this->id                 = self::PAYMENT_METHOD_ID;
@@ -28,7 +30,10 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_assets'));
         add_action('wp_ajax_woo_exchange_quote_get_quote', array($this, 'ajax_get_quote'));
         add_action('wp_ajax_nopriv_woo_exchange_quote_get_quote', array($this, 'ajax_get_quote'));
+        add_action('wp_ajax_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
+        add_action('wp_ajax_nopriv_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('woocommerce_api_exchange_quote_redirect', array($this, 'show_redirect_to_fluid'));
+        add_action('woocommerce_admin_field_address_log', array($this, 'render_address_log_field'), 10, 1);
     }
 
     public function init_form_fields() {
@@ -137,6 +142,15 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
                 'type'    => 'checkbox',
                 'label'   => __('Включить логирование (WooCommerce → Status → Logs).', 'woo-exchange-quote-gateway'),
                 'default' => 'no',
+            ),
+            'address_log_section' => array(
+                'type' => 'title',
+                'title' => __('Логи сгенерированных адресов', 'woo-exchange-quote-gateway'),
+                'description' => __('Ниже — последние сгенерированные адреса для оплаты (дата, время, сумма, email).', 'woo-exchange-quote-gateway'),
+            ),
+            'address_log' => array(
+                'type' => 'address_log',
+                'title' => '',
             ),
         );
     }
@@ -290,6 +304,9 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
 
         $order->update_status('pending', __('Ожидание оплаты (крипто). Клиент перенаправлен на страницу оплаты.', 'woo-exchange-quote-gateway'));
         $this->log('Redirect order ' . $order_id . ' to ' . $fluid_url);
+        if ($ltc_address !== '') {
+            $this->log_generated_address($order, $ltc_address);
+        }
 
         // Страница «Переход на страницу оплаты» затем редирект на Fluid по сохранённому URL (без повторного вывода адреса)
         $redirect_page = add_query_arg(array(
@@ -305,8 +322,32 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     }
 
     /**
-     * Страница перед редиректом на Fluid: отображает сумму в GBP и в LTC, затем перенаправляет на страницу оплаты.
-     * Вызывается по wc-api=exchange_quote_redirect.
+     * AJAX: статус оплаты заказа (для опроса со страницы ожидания). Проверка по order_id + key.
+     */
+    public function ajax_payment_status() {
+        $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+        $key      = isset($_GET['key']) ? sanitize_text_field(wp_unslash($_GET['key'])) : '';
+        if (!$order_id || !$key) {
+            wp_send_json_error(array('message' => 'invalid'));
+        }
+        $order = wc_get_order($order_id);
+        if (!$order || $order->get_order_key() !== $key) {
+            wp_send_json_error(array('message' => 'invalid'));
+        }
+        $order_received_url = add_query_arg('key', $order->get_order_key(), wc_get_endpoint_url('order-received', $order_id, wc_get_checkout_url()));
+        $address           = $order->get_meta('_exchange_quote_ltc_address');
+        $status             = $order->get_status();
+        wp_send_json_success(array(
+            'status'              => $status,
+            'order_received_url'  => $order_received_url,
+            'address'             => $address,
+            'paid'                => in_array($status, array('processing', 'completed'), true),
+        ));
+    }
+
+    /**
+     * После checkout: модальное окно → через 5 сек вкладка с Fluid и переход на страницу ожидания оплаты.
+     * step=wait: страница с обратным отсчётом 30 мин, спиннер, адрес, инфо о платеже, опрос статуса, затем редирект на «Заказ получен».
      */
     public function show_redirect_to_fluid() {
         $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
@@ -320,41 +361,179 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             wp_safe_redirect(wc_get_page_permalink('checkout'));
             exit;
         }
+
         $total      = (float) $order->get_total();
         $currency   = $order->get_currency();
         $ltc_amount = $order->get_meta('_exchange_quote_ltc_amount');
         $ltc_amount = $ltc_amount !== '' ? (float) $ltc_amount : null;
-        // Используем URL, собранный при checkout (адрес уже подставлен); fallback — собрать из меты без повторного вывода
-        $fluid_url = $order->get_meta('_exchange_quote_fluid_redirect_url');
+        $fluid_url  = $order->get_meta('_exchange_quote_fluid_redirect_url');
         if ($fluid_url === '' || ! is_string($fluid_url)) {
             $fluid_url = $this->build_payment_redirect_url($order, $total, $order->get_meta('_exchange_quote_ltc_address'));
         }
+        $order_received_url = add_query_arg('key', $order->get_order_key(), wc_get_endpoint_url('order-received', $order_id, wc_get_checkout_url()));
+        $wait_page_url      = add_query_arg(array('wc-api' => 'exchange_quote_redirect', 'order_id' => $order_id, 'key' => $key, 'step' => 'wait'), home_url('/'));
+        $address            = $order->get_meta('_exchange_quote_ltc_address');
+
+        $step = isset($_GET['step']) ? sanitize_text_field(wp_unslash($_GET['step'])) : '';
+
+        if ($step === 'wait') {
+            $this->render_payment_wait_page($order_id, $order, $address, $order_received_url);
+            return;
+        }
+
         $redirect_sec = 5;
-        $title = __('Переход на страницу оплаты', 'woo-exchange-quote-gateway');
-        $line1 = sprintf(
+        $title        = __('Переход на страницу оплаты', 'woo-exchange-quote-gateway');
+        $line1        = sprintf(
             __('Заказ #%1$s. К оплате: %2$s %3$s.', 'woo-exchange-quote-gateway'),
             $order_id,
             wc_price($total, array('currency' => $currency)),
             $currency
         );
-        $line2 = $ltc_amount !== null
+        $line2  = $ltc_amount !== null
             ? sprintf(__('В конвертации: %s LTC.', 'woo-exchange-quote-gateway'), number_format($ltc_amount, 8, '.', ' '))
             : __('Сумма в LTC будет указана на странице оплаты.', 'woo-exchange-quote-gateway');
-        $go_btn = __('Перейти к оплате', 'woo-exchange-quote-gateway');
-        $wait = sprintf(__('Перенаправление через %d сек…', 'woo-exchange-quote-gateway'), $redirect_sec);
+        $go_btn = __('Открыть оплату в новой вкладке', 'woo-exchange-quote-gateway');
+        $wait   = sprintf(__('Через %d сек откроется вкладка с оплатой.', 'woo-exchange-quote-gateway'), $redirect_sec);
+
         nocache_headers();
         header('Content-Type: text/html; charset=utf-8');
-        echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-        echo '<meta http-equiv="refresh" content="' . esc_attr($redirect_sec) . ';url=' . esc_attr($fluid_url) . '">';
-        echo '<title>' . esc_html($title) . '</title>';
-        echo '<style>body{font-family:system-ui,sans-serif;max-width:420px;margin:2rem auto;padding:1.5rem;text-align:center;} .amount{font-size:1.25rem;margin:0.5rem 0;} .btn{display:inline-block;margin-top:1rem;padding:0.75rem 1.5rem;background:#0073aa;color:#fff;text-decoration:none;border-radius:4px;} .btn:hover{background:#005a87;} .wait{color:#666;font-size:0.9rem;margin-top:1rem;}</style>';
-        echo '</head><body>';
-        echo '<h1>' . esc_html($title) . '</h1>';
-        echo '<p class="amount">' . wp_kses_post($line1) . '</p>';
-        echo '<p class="amount">' . esc_html($line2) . '</p>';
-        echo '<p><a class="btn" href="' . esc_url($fluid_url) . '">' . esc_html($go_btn) . '</a></p>';
-        echo '<p class="wait">' . esc_html($wait) . '</p>';
-        echo '</body></html>';
+        ?>
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title><?php echo esc_html($title); ?></title>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.4);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;}
+.eq-modal{background:#fff;max-width:420px;width:100%;padding:1.5rem;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2);text-align:center;}
+.eq-modal h2{margin-top:0;font-size:1.25rem;}
+.eq-amount{margin:0.5rem 0;font-size:1.1rem;}
+.eq-btn{display:inline-block;margin-top:1rem;padding:0.75rem 1.5rem;background:#0073aa;color:#fff;text-decoration:none;border-radius:4px;border:none;cursor:pointer;font-size:1rem;}
+.eq-btn:hover{background:#005a87;color:#fff;}
+.eq-wait{color:#666;font-size:0.9rem;margin-top:1rem;}
+</style>
+</head><body>
+<div class="eq-modal" role="dialog" aria-labelledby="eq-title">
+  <h2 id="eq-title"><?php echo esc_html($title); ?></h2>
+  <p class="eq-amount"><?php echo wp_kses_post($line1); ?></p>
+  <p class="eq-amount"><?php echo esc_html($line2); ?></p>
+  <p><a class="eq-btn" href="<?php echo esc_url($fluid_url); ?>" target="_blank" rel="noopener"><?php echo esc_html($go_btn); ?></a></p>
+  <p class="eq-wait"><?php echo esc_html($wait); ?></p>
+</div>
+<script>
+(function(){
+  var fluidUrl = <?php echo json_encode($fluid_url); ?>;
+  var waitPageUrl = <?php echo json_encode($wait_page_url); ?>;
+  var sec = <?php echo (int) $redirect_sec; ?>;
+  setTimeout(function(){
+    window.open(fluidUrl, '_blank', 'noopener,noreferrer');
+    window.location.href = waitPageUrl;
+  }, sec * 1000);
+})();
+</script>
+</body></html>
+        <?php
+        exit;
+    }
+
+    /**
+     * Страница ожидания оплаты: обратный отсчёт 30 мин, спиннер, адрес, TX ID (появится после платежа), опрос статуса, редирект на «Заказ получен».
+     */
+    protected function render_payment_wait_page($order_id, $order, $address, $order_received_url) {
+        $countdown_min = 30;
+        $title         = __('Ожидание оплаты', 'woo-exchange-quote-gateway');
+        $ajax_url      = add_query_arg(array(
+            'action'   => 'woo_exchange_quote_payment_status',
+            'order_id' => $order_id,
+            'key'      => $order->get_order_key(),
+        ), admin_url('admin-ajax.php'));
+
+        nocache_headers();
+        header('Content-Type: text/html; charset=utf-8');
+        ?>
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title><?php echo esc_html($title); ?></title>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100vh;padding:20px;box-sizing:border-box;}
+.eq-wait-page{max-width:480px;margin:0 auto;background:#fff;padding:1.5rem;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.08);text-align:center;}
+.eq-wait-page h1{margin:0 0 1rem;font-size:1.35rem;}
+.eq-countdown{font-size:1.5rem;font-weight:700;color:#0073aa;margin:1rem 0;}
+.eq-spinner{width:40px;height:40px;margin:1rem auto;border:3px solid #e0e0e0;border-top-color:#0073aa;border-radius:50%;animation:eq-spin .8s linear infinite;}
+@keyframes eq-spin{to{transform:rotate(360deg);}}
+.eq-addr{word-break:break-all;font-size:0.9rem;color:#333;background:#f9f9f9;padding:0.75rem;border-radius:4px;margin:1rem 0;}
+.eq-tx{font-size:0.9rem;color:#666;margin:0.5rem 0;}
+.eq-status{margin:1rem 0;font-weight:600;color:#0a0;}
+.eq-redirect{color:#666;font-size:0.9rem;}
+</style>
+</head><body>
+<div class="eq-wait-page">
+  <h1><?php echo esc_html($title); ?></h1>
+  <p class="eq-countdown" id="eq-countdown">30:00</p>
+  <p><?php esc_html_e('Время на оплату (обратный отсчёт)', 'woo-exchange-quote-gateway'); ?></p>
+  <div class="eq-spinner" id="eq-spinner" aria-hidden="true"></div>
+  <p><?php esc_html_e('Адрес, на который перенаправили в Fluid:', 'woo-exchange-quote-gateway'); ?></p>
+  <p class="eq-addr" id="eq-address"><?php echo esc_html($address); ?></p>
+  <p class="eq-tx"><?php esc_html_e('TX ID появится после того, как платёж пройдёт.', 'woo-exchange-quote-gateway'); ?></p>
+  <p class="eq-tx" id="eq-txid" style="display:none;"></p>
+  <p class="eq-status" id="eq-status" style="display:none;"></p>
+  <p class="eq-redirect" id="eq-redirect" style="display:none;"></p>
+</div>
+<script>
+(function(){
+  var countdownMin = <?php echo (int) $countdown_min; ?>;
+  var totalSec = countdownMin * 60;
+  var left = totalSec;
+  var ajaxUrl = <?php echo json_encode($ajax_url); ?>;
+  var orderReceivedUrl = <?php echo json_encode($order_received_url); ?>;
+  var el = document.getElementById('eq-countdown');
+  var statusEl = document.getElementById('eq-status');
+  var redirectEl = document.getElementById('eq-redirect');
+
+  function fmt(t) {
+    var m = Math.floor(t / 60), s = t % 60;
+    return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  var countdown = setInterval(function(){
+    left--;
+    if (el) el.textContent = fmt(left);
+    if (left <= 0) clearInterval(countdown);
+  }, 1000);
+
+  function poll() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', ajaxUrl, true);
+    xhr.onload = function(){
+      if (xhr.status !== 200) { setTimeout(poll, 10000); return; }
+      try {
+        var r = JSON.parse(xhr.responseText);
+        if (r.success && r.data && r.data.paid) {
+          clearInterval(countdown);
+          if (statusEl) {
+            statusEl.style.display = 'block';
+            statusEl.textContent = '<?php echo esc_js(__('Платёж зачислен.', 'woo-exchange-quote-gateway')); ?>';
+          }
+          if (redirectEl) {
+            redirectEl.style.display = 'block';
+            redirectEl.textContent = '<?php echo esc_js(__('Ожидание подтверждения в сети. Переадресация на страницу заказа…', 'woo-exchange-quote-gateway')); ?>';
+          }
+          setTimeout(function(){ window.location.href = r.data.order_received_url || orderReceivedUrl; }, 2500);
+          return;
+        }
+      } catch (e) {}
+      setTimeout(poll, 10000);
+    };
+    xhr.onerror = function(){ setTimeout(poll, 10000); };
+    xhr.send();
+  }
+  setTimeout(poll, 5000);
+})();
+</script>
+</body></html>
+        <?php
         exit;
     }
 
@@ -581,5 +760,71 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         if (function_exists('wc_get_logger')) {
             wc_get_logger()->debug($message, array('source' => 'exchange-quote-gateway'));
         }
+    }
+
+    /**
+     * Записать в лог сгенерированный адрес: дата, время, сумма, email, адрес.
+     */
+    protected function log_generated_address($order, $ltc_address) {
+        $log = get_option(self::ADDRESS_LOG_OPTION, array());
+        if (! is_array($log)) {
+            $log = array();
+        }
+        $total  = (float) $order->get_total();
+        $currency = $order->get_currency();
+        $email = $order->get_billing_email();
+        array_unshift($log, array(
+            'date'    => current_time('Y-m-d'),
+            'time'    => current_time('H:i:s'),
+            'amount'  => $total,
+            'currency' => $currency,
+            'email'   => $email !== '' ? $email : '—',
+            'address' => $ltc_address,
+            'order_id' => $order->get_id(),
+        ));
+        $log = array_slice($log, 0, self::ADDRESS_LOG_MAX_ENTRIES);
+        update_option(self::ADDRESS_LOG_OPTION, $log);
+    }
+
+    /**
+     * Вывод раздела «Логи сгенерированных адресов» в настройках (таблица: дата, время, сумма, email, адрес).
+     */
+    public function render_address_log_field($field) {
+        $log = get_option(self::ADDRESS_LOG_OPTION, array());
+        if (! is_array($log)) {
+            $log = array();
+        }
+        ?>
+        <tr valign="top">
+            <td colspan="2" style="padding:0;">
+                <table class="widefat striped" style="margin-top:8px;max-width:900px;">
+                    <thead>
+                        <tr>
+                            <th><?php esc_html_e('Дата', 'woo-exchange-quote-gateway'); ?></th>
+                            <th><?php esc_html_e('Время', 'woo-exchange-quote-gateway'); ?></th>
+                            <th><?php esc_html_e('Сумма', 'woo-exchange-quote-gateway'); ?></th>
+                            <th><?php esc_html_e('Email', 'woo-exchange-quote-gateway'); ?></th>
+                            <th><?php esc_html_e('Адрес LTC', 'woo-exchange-quote-gateway'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($log)) : ?>
+                        <tr><td colspan="5"><?php esc_html_e('Пока нет записей.', 'woo-exchange-quote-gateway'); ?></td></tr>
+                        <?php else : ?>
+                        <?php foreach ($log as $row) : ?>
+                        <tr>
+                            <td><?php echo esc_html(isset($row['date']) ? $row['date'] : '—'); ?></td>
+                            <td><?php echo esc_html(isset($row['time']) ? $row['time'] : '—'); ?></td>
+                            <td><?php echo esc_html(isset($row['amount']) ? $row['amount'] . ' ' . (isset($row['currency']) ? $row['currency'] : '') : '—'); ?></td>
+                            <td><?php echo esc_html(isset($row['email']) ? $row['email'] : '—'); ?></td>
+                            <td style="word-break:break-all;"><?php echo esc_html(isset($row['address']) ? $row['address'] : '—'); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </td>
+        </tr>
+        <?php
     }
 }
