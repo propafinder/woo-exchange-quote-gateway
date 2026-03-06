@@ -56,8 +56,9 @@ class WC_Exchange_Quote_Verifier {
             return;
         }
 
+        // Проверяем заказы в on-hold (ожидание крипто-платежа).
         $orders = wc_get_orders(array(
-            'status'         => 'pending',
+            'status'         => 'on-hold',
             'payment_method' => 'exchange_quote',
             'limit'          => 50,
             'return'         => 'ids',
@@ -73,7 +74,6 @@ class WC_Exchange_Quote_Verifier {
             if ($address === '' || $expected === '' || (float) $expected <= 0) {
                 continue;
             }
-            // Ожидаемая сумма LTC из ответа Meld API (best quote destination_amount)
             $expected_float = (float) $expected;
             $received = self::get_address_received_ltc($address, $gateway);
             if ($received === null) {
@@ -83,19 +83,17 @@ class WC_Exchange_Quote_Verifier {
             $balance = $use_unconfirmed ? ($received['confirmed'] + $received['unconfirmed']) : $received['confirmed'];
             $tolerance = 0.00001;
             if ($balance >= $expected_float - $tolerance) {
-                $order->payment_complete();
-                $order->add_order_note(
-                    sprintf(
-                        __('Оплата LTC получена. Ожидалось: %s LTC, получено (confirmed: %s, unconfirmed: %s).', 'woo-exchange-quote-gateway'),
-                        $expected_float,
-                        $received['confirmed'],
-                        $received['unconfirmed']
-                    )
-                );
+                // Сумма подтверждена — переводим on-hold → pending (ждёт обработки).
+                $order->update_status('pending', sprintf(
+                    __('Оплата LTC подтверждена. Ожидалось: %s LTC, получено (confirmed: %s, unconfirmed: %s).', 'woo-exchange-quote-gateway'),
+                    $expected_float,
+                    $received['confirmed'],
+                    $received['unconfirmed']
+                ));
                 if (function_exists('wc_reduce_stock_levels')) {
                     wc_reduce_stock_levels($order_id);
                 }
-                self::log($gateway, 'Order ' . $order_id . ' marked paid. Balance ' . $balance . ' >= ' . $expected_float);
+                self::log($gateway, 'Order ' . $order_id . ' confirmed: on-hold → pending. Balance ' . $balance . ' >= ' . $expected_float);
             }
         }
     }
