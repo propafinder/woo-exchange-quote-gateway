@@ -100,6 +100,87 @@ function woo_exchange_quote_clear_update_cache() {
     exit;
 }
 
+/**
+ * Тестовый ордер: /wp-admin/admin.php?action=eq_test_order&amount=3
+ * Создаёт заказ, HD-адрес, котировку, ставит on-hold. Для проверки верификатора.
+ */
+add_action('admin_action_eq_test_order', 'woo_exchange_quote_test_order');
+function woo_exchange_quote_test_order() {
+    if (!current_user_can('manage_woocommerce')) {
+        wp_die('Access denied.');
+    }
+    if (!class_exists('WooCommerce') || !class_exists('WC_Gateway_Exchange_Quote')) {
+        wp_die('WooCommerce or Exchange Quote gateway not loaded.');
+    }
+
+    $amount = isset($_GET['amount']) ? floatval($_GET['amount']) : 3.00;
+    if ($amount <= 0) {
+        $amount = 3.00;
+    }
+
+    $gateways = WC()->payment_gateways()->payment_gateways();
+    $gateway  = isset($gateways['exchange_quote']) ? $gateways['exchange_quote'] : null;
+    if (!$gateway) {
+        wp_die('Exchange Quote gateway not found.');
+    }
+
+    $currency = $gateway->get_option('source_currency', 'GBP');
+
+    $order = wc_create_order(array(
+        'status'         => 'pending',
+        'payment_method' => 'exchange_quote',
+    ));
+    $order->set_currency($currency);
+    $order->set_total($amount);
+    $order->set_billing_email(get_option('admin_email'));
+    $order->set_billing_first_name('Test');
+    $order->set_billing_last_name('Order');
+    $order->save();
+
+    $order_id = $order->get_id();
+
+    // HD-адрес (как в process_payment).
+    $get_addr = new ReflectionMethod($gateway, 'get_ltc_address_for_order');
+    $get_addr->setAccessible(true);
+    $ltc_address = $get_addr->invoke($gateway, $order_id, $order);
+
+    if ($ltc_address) {
+        $order->update_meta_data('_exchange_quote_ltc_address', $ltc_address);
+    }
+
+    // Котировка (синхронно — тест, можно подождать).
+    $fetch = new ReflectionMethod($gateway, 'fetch_quote');
+    $fetch->setAccessible(true);
+    $quote = $fetch->invoke($gateway, $amount, $ltc_address);
+
+    $ltc_amount = '';
+    if (!empty($quote['destination_amount'])) {
+        $ltc_amount = $quote['destination_amount'];
+        $order->update_meta_data('_exchange_quote_ltc_amount', $ltc_amount);
+        $order->update_meta_data('_exchange_quote_source_amount', $quote['source_amount']);
+        $order->update_meta_data('_exchange_quote_destination_currency', isset($quote['destination_currency']) ? $quote['destination_currency'] : 'LTC');
+    }
+
+    $order->update_status('on-hold', 'Test order: awaiting crypto payment.');
+    $order->save();
+
+    $admin_url = admin_url('post.php?post=' . $order_id . '&action=edit');
+
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<h2>Test order created</h2>';
+    echo '<table style="border-collapse:collapse;" border="1" cellpadding="8">';
+    echo '<tr><td><b>Order ID</b></td><td><a href="' . esc_url($admin_url) . '">#' . $order_id . '</a></td></tr>';
+    echo '<tr><td><b>Amount</b></td><td>' . esc_html($amount . ' ' . $currency) . '</td></tr>';
+    echo '<tr><td><b>LTC Address</b></td><td><code>' . esc_html($ltc_address ?: '— not derived —') . '</code></td></tr>';
+    echo '<tr><td><b>LTC Amount (quote)</b></td><td>' . esc_html($ltc_amount ? number_format((float)$ltc_amount, 8) : '— quote failed —') . '</td></tr>';
+    echo '<tr><td><b>Status</b></td><td>on-hold</td></tr>';
+    echo '</table>';
+    echo '<p style="margin-top:16px;">Верификатор (cron каждые 5 мин) проверит баланс адреса.<br>';
+    echo 'При поступлении ≥ ' . esc_html($ltc_amount ? number_format((float)$ltc_amount, 8) . ' LTC' : '?') . ' — переведёт в pending.</p>';
+    echo '<p><a href="' . esc_url($admin_url) . '">Открыть заказ</a></p>';
+    exit;
+}
+
 add_action('admin_enqueue_scripts', 'woo_exchange_quote_admin_plugins_script');
 function woo_exchange_quote_admin_plugins_script($hook) {
     if ($hook !== 'plugins.php') {
