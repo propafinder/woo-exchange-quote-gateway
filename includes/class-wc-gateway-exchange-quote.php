@@ -35,6 +35,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         add_action('wp_ajax_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('wp_ajax_nopriv_woo_exchange_quote_payment_status', array($this, 'ajax_payment_status'));
         add_action('woocommerce_api_exchange_quote_redirect', array($this, 'show_redirect_to_fluid'));
+        // Фоновый запрос котировки (WP cron single event) — чтобы не блокировать checkout.
+        add_action('woo_exchange_quote_async_fetch_quote', array($this, 'async_fetch_quote'), 10, 2);
         // Хук для основных настроек WC (если понадобится); на странице способа оплаты WC вызывает generate_*_html()
         add_action('woocommerce_admin_field_address_log', array($this, 'render_address_log_field'), 10, 1);
     }
@@ -186,10 +188,16 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             $order->update_meta_data('_exchange_quote_ltc_address', $ltc_address);
         }
 
-        // Котировку НЕ запрашиваем синхронно — это до 30 сек ожидания; Fluid сам покажет курс.
         $fluid_url = $this->build_payment_redirect_url($order, $total, $ltc_address);
         $order->update_meta_data('_exchange_quote_fluid_redirect_url', $fluid_url);
         $order->save();
+
+        // Котировку запрашиваем в фоне (WP cron) — покупатель не ждёт 30 сек.
+        // Результат (LTC amount) сохранится в мету и верификатор подхватит.
+        if ($total > 0) {
+            wp_schedule_single_event(time(), 'woo_exchange_quote_async_fetch_quote', array($order_id, $ltc_address));
+            spawn_cron();
+        }
 
         $order->update_status('pending', __('Ожидание оплаты (крипто). Клиент перенаправлен на страницу оплаты.', 'woo-exchange-quote-gateway'));
         $this->log('Redirect order ' . $order_id . ' to ' . $fluid_url);
@@ -210,6 +218,36 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
     }
 
     /**
+     * Фоновый запрос котировки (WP cron single event). Записывает ожидаемую сумму LTC в мету заказа.
+     * Верификатор (cron каждые 5 мин) использует _exchange_quote_ltc_amount для сверки с блокчейном.
+     */
+    public function async_fetch_quote($order_id, $ltc_address) {
+        $order = wc_get_order($order_id);
+        if (!$order) {
+            return;
+        }
+        // Если сумма уже записана — не запрашиваем повторно.
+        $existing = $order->get_meta('_exchange_quote_ltc_amount');
+        if ($existing !== '' && (float) $existing > 0) {
+            return;
+        }
+        $total = (float) $order->get_total();
+        if ($total <= 0) {
+            return;
+        }
+        $quote = $this->fetch_quote($total, $ltc_address);
+        if (!empty($quote['destination_amount'])) {
+            $order->update_meta_data('_exchange_quote_ltc_amount', $quote['destination_amount']);
+            $order->update_meta_data('_exchange_quote_source_amount', $quote['source_amount']);
+            $order->update_meta_data('_exchange_quote_destination_currency', $quote['destination_currency'] ?? $this->get_option('destination_crypto', 'LTC'));
+            $order->save();
+            $this->log('Async quote for order ' . $order_id . ': ' . $quote['destination_amount'] . ' LTC');
+        } else {
+            $this->log('Async quote for order ' . $order_id . ' failed — LTC amount not saved.');
+        }
+    }
+
+    /**
      * AJAX: статус оплаты заказа (для опроса со страницы ожидания). Проверка по order_id + key.
      */
     public function ajax_payment_status() {
@@ -224,11 +262,13 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         }
         $order_received_url = add_query_arg('key', $order->get_order_key(), wc_get_endpoint_url('order-received', $order_id, wc_get_checkout_url()));
         $address           = $order->get_meta('_exchange_quote_ltc_address');
-        $status             = $order->get_status();
+        $status     = $order->get_status();
+        $ltc_amount = $order->get_meta('_exchange_quote_ltc_amount');
         wp_send_json_success(array(
             'status'              => $status,
             'order_received_url'  => $order_received_url,
             'address'             => $address,
+            'ltc_amount'          => $ltc_amount !== '' ? (float) $ltc_amount : null,
             'paid'                => in_array($status, array('processing', 'completed'), true),
         ));
     }
@@ -264,17 +304,27 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             return;
         }
 
-        $redirect_sec  = 5;
+        $redirect_sec  = 8;
         $gbp_formatted = number_format($total, 2, '.', ' ');
+        $ltc_meta      = $order->get_meta('_exchange_quote_ltc_amount');
+        $ltc_ready     = ($ltc_meta !== '' && (float) $ltc_meta > 0) ? (float) $ltc_meta : null;
+
+        $poll_url = add_query_arg(array(
+            'action'   => 'woo_exchange_quote_payment_status',
+            'order_id' => $order_id,
+            'key'      => $order->get_order_key(),
+        ), admin_url('admin-ajax.php'));
 
         $payload = array(
             'title'       => 'Redirect to payment',
-            'quoteLine'   => sprintf('Order #%s — %s %s', $order_id, $gbp_formatted, $currency),
+            'gbpLine'     => sprintf('%s %s', $gbp_formatted, $currency),
+            'ltcAmount'   => $ltc_ready !== null ? number_format($ltc_ready, 8, '.', '') : null,
             'goBtn'       => 'Continue to payment',
             'waitMsg'     => sprintf('Redirecting in %d seconds…', $redirect_sec),
             'fallback'    => 'If not redirected, click here',
             'fluidUrl'    => $fluid_url,
             'redirectSec' => (int) $redirect_sec,
+            'pollUrl'     => $poll_url,
         );
 
         nocache_headers();
@@ -292,54 +342,82 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
 html,body{margin:0;padding:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen-Sans,Ubuntu,sans-serif;font-size:16px;line-height:1.5;color:#1e293b;background:#0f172a;}
 body{display:flex;align-items:center;justify-content:center;padding:24px;}
 .eq-overlay{position:fixed;inset:0;background:rgba(15,23,42,.85);display:flex;align-items:center;justify-content:center;padding:24px;}
-.eq-modal{background:#fff;max-width:420px;width:100%;border-radius:16px;box-shadow:0 25px 50px -12px rgba(0,0,0,.35),0 0 0 1px rgba(255,255,255,.05);overflow:hidden;}
+.eq-modal{background:#fff;max-width:440px;width:100%;border-radius:16px;box-shadow:0 25px 50px -12px rgba(0,0,0,.35);overflow:hidden;}
 .eq-modal-header{background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%);padding:24px 24px 20px;text-align:center;border-bottom:1px solid #e2e8f0;}
-.eq-modal-header h1{margin:0;font-size:1.25rem;font-weight:600;color:#0f172a;letter-spacing:-0.02em;}
+.eq-modal-header h1{margin:0;font-size:1.2rem;font-weight:600;color:#0f172a;letter-spacing:-0.02em;}
 .eq-modal-body{padding:24px;}
-.eq-payment-block{background:#f8fafc;border-radius:12px;padding:20px;margin-bottom:20px;text-align:center;}
-.eq-payment-block .eq-label{font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;margin-bottom:6px;}
-.eq-payment-block .eq-value{font-size:1.125rem;font-weight:600;color:#0f172a;}
+.eq-row{display:flex;gap:12px;margin-bottom:20px;}
+.eq-card{flex:1;background:#f8fafc;border-radius:12px;padding:16px;text-align:center;}
+.eq-card .eq-label{font-size:0.7rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;margin-bottom:4px;}
+.eq-card .eq-val{font-size:1.1rem;font-weight:700;color:#0f172a;}
+.eq-card .eq-val.eq-ltc{color:#0ea5e9;}
+.eq-arrow{display:flex;align-items:center;justify-content:center;font-size:1.2rem;color:#94a3b8;}
+.eq-loading{color:#94a3b8;font-size:0.85rem;}
+@keyframes eq-dots{0%,80%,100%{opacity:0}40%{opacity:1}}
+.eq-loading span{animation:eq-dots 1.4s infinite both}
+.eq-loading span:nth-child(2){animation-delay:0.2s}
+.eq-loading span:nth-child(3){animation-delay:0.4s}
 .eq-actions{text-align:center;}
 .eq-btn{display:inline-block;padding:14px 28px;background:#0f172a;color:#fff!important;text-decoration:none;border-radius:10px;font-size:1rem;font-weight:600;transition:background .2s,transform .05s;}
 .eq-btn:hover{background:#1e293b;color:#fff!important;}
 .eq-btn:active{transform:scale(0.98);}
-.eq-meta{margin-top:20px;font-size:0.8125rem;color:#64748b;}
+.eq-meta{margin-top:20px;font-size:0.8125rem;color:#64748b;text-align:center;}
 .eq-meta a{color:#0ea5e9;text-decoration:none;}
 .eq-meta a:hover{text-decoration:underline;}
 </style>
 </head><body>
 <script>
 (function(){
-  var payload = <?php echo wp_json_encode($payload); ?>;
-  var quote = (payload.quoteLine || '').replace(/^Order #(\d+)\.\s*/, '');
-  var orderNum = (payload.quoteLine || '').match(/Order #(\d+)/);
-  orderNum = orderNum ? orderNum[1] : '';
-  var htmlBlob = [
+  var P = <?php echo wp_json_encode($payload); ?>;
+  var ltcText = P.ltcAmount ? P.ltcAmount + ' LTC' : '<span class="eq-loading">calculating<span>.</span><span>.</span><span>.</span></span>';
+  var html = [
     '<div class="eq-overlay">',
-    '  <div class="eq-modal" role="dialog" aria-labelledby="eq-title">',
-    '    <div class="eq-modal-header"><h1 id="eq-title">' + (payload.title || 'Redirect to payment') + '</h1></div>',
-    '    <div class="eq-modal-body">',
-    '      <div class="eq-payment-block">',
-    '        <div class="eq-label">Payment details</div>',
-    '        <div class="eq-value">' + (quote || '—') + '</div>',
-    '      </div>',
-    '      <div class="eq-actions">',
-    '        <a class="eq-btn" href="' + (payload.fluidUrl || '#') + '" rel="noopener noreferrer">' + (payload.goBtn || 'Continue to payment') + '</a>',
-    '      </div>',
-    '      <p class="eq-meta">' + (payload.waitMsg || '') + '<br><a href="' + (payload.fluidUrl || '#') + '" rel="noopener noreferrer">' + (payload.fallback || 'Click here if not redirected') + '</a></p>',
-    '    </div>',
-    '  </div>',
-    '</div>'
+    '<div class="eq-modal" role="dialog" aria-labelledby="eq-title">',
+    '<div class="eq-modal-header"><h1 id="eq-title">' + (P.title || 'Redirect to payment') + '</h1></div>',
+    '<div class="eq-modal-body">',
+    '<div class="eq-row">',
+    '  <div class="eq-card"><div class="eq-label">You pay</div><div class="eq-val">' + (P.gbpLine || '—') + '</div></div>',
+    '  <div class="eq-arrow">→</div>',
+    '  <div class="eq-card"><div class="eq-label">You send</div><div id="eq-ltc" class="eq-val eq-ltc">' + ltcText + '</div></div>',
+    '</div>',
+    '<div class="eq-actions">',
+    '  <a class="eq-btn" href="' + (P.fluidUrl || '#') + '" rel="noopener noreferrer">' + (P.goBtn || 'Continue') + '</a>',
+    '</div>',
+    '<p class="eq-meta">' + (P.waitMsg || '') + '<br><a href="' + (P.fluidUrl || '#') + '" rel="noopener noreferrer">' + (P.fallback || 'Click here') + '</a></p>',
+    '</div></div></div>'
   ].join('');
-  document.body.innerHTML = htmlBlob;
-  document.title = payload.title || 'Redirect to payment';
-  var fluidUrl = payload.fluidUrl;
-  var sec = payload.redirectSec || 5;
+  document.body.innerHTML = html;
+  document.title = P.title || 'Redirect to payment';
+
   if (window.self !== window.top) {
-    window.top.location.href = window.location.href || window.location.toString();
+    window.top.location.href = window.location.href;
     return;
   }
-  setTimeout(function(){ window.location.replace(fluidUrl); }, sec * 1000);
+
+  // Опрос LTC суммы, если ещё не готова (фоновый cron запишет в мету).
+  if (!P.ltcAmount && P.pollUrl) {
+    var attempts = 0, maxAttempts = 10;
+    var poll = setInterval(function(){
+      attempts++;
+      if (attempts > maxAttempts) { clearInterval(poll); return; }
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', P.pollUrl, true);
+      xhr.onload = function(){
+        try {
+          var r = JSON.parse(xhr.responseText);
+          if (r.success && r.data && r.data.ltc_amount) {
+            var el = document.getElementById('eq-ltc');
+            if (el) el.innerHTML = parseFloat(r.data.ltc_amount).toFixed(8) + ' LTC';
+            clearInterval(poll);
+          }
+        } catch(e){}
+      };
+      xhr.send();
+    }, 2000);
+  }
+
+  var sec = P.redirectSec || 8;
+  setTimeout(function(){ window.location.replace(P.fluidUrl); }, sec * 1000);
 })();
 </script>
 </body></html>
