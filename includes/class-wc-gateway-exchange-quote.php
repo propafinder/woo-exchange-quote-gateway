@@ -416,37 +416,57 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
         header('Referrer-Policy: no-referrer');
         ?>
 <!DOCTYPE html>
-<html><head>
+<html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Redirect</title>
+<title>Redirect to payment</title>
 <style>
-body{margin:0;font-family:system-ui,sans-serif;background:rgba(0,0,0,.45);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;}
-.eq-modal{background:#fff;max-width:440px;width:100%;padding:1.75rem;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.2);text-align:center;}
-.eq-modal h2{margin:0 0 1rem;font-size:1.25rem;}
-.eq-quote{margin:1rem 0;font-size:1.15rem;font-weight:600;color:#1d2327;}
-.eq-btn{display:inline-block;margin-top:1rem;padding:0.75rem 1.5rem;background:#0073aa;color:#fff!important;text-decoration:none;border-radius:6px;font-size:1rem;}
-.eq-btn:hover{background:#005a87;color:#fff!important;}
-.eq-wait{color:#50575e;font-size:0.9rem;margin-top:1rem;}
-.eq-fallback{margin-top:1rem;font-size:0.85rem;}
-.eq-fallback a{color:#0073aa;}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen-Sans,Ubuntu,sans-serif;font-size:16px;line-height:1.5;color:#1e293b;background:#0f172a;}
+body{display:flex;align-items:center;justify-content:center;padding:24px;}
+.eq-overlay{position:fixed;inset:0;background:rgba(15,23,42,.85);display:flex;align-items:center;justify-content:center;padding:24px;}
+.eq-modal{background:#fff;max-width:420px;width:100%;border-radius:16px;box-shadow:0 25px 50px -12px rgba(0,0,0,.35),0 0 0 1px rgba(255,255,255,.05);overflow:hidden;}
+.eq-modal-header{background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%);padding:24px 24px 20px;text-align:center;border-bottom:1px solid #e2e8f0;}
+.eq-modal-header h1{margin:0;font-size:1.25rem;font-weight:600;color:#0f172a;letter-spacing:-0.02em;}
+.eq-modal-body{padding:24px;}
+.eq-payment-block{background:#f8fafc;border-radius:12px;padding:20px;margin-bottom:20px;text-align:center;}
+.eq-payment-block .eq-label{font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;margin-bottom:6px;}
+.eq-payment-block .eq-value{font-size:1.125rem;font-weight:600;color:#0f172a;}
+.eq-actions{text-align:center;}
+.eq-btn{display:inline-block;padding:14px 28px;background:#0f172a;color:#fff!important;text-decoration:none;border-radius:10px;font-size:1rem;font-weight:600;transition:background .2s,transform .05s;}
+.eq-btn:hover{background:#1e293b;color:#fff!important;}
+.eq-btn:active{transform:scale(0.98);}
+.eq-meta{margin-top:20px;font-size:0.8125rem;color:#64748b;}
+.eq-meta a{color:#0ea5e9;text-decoration:none;}
+.eq-meta a:hover{text-decoration:underline;}
 </style>
 </head><body>
 <script>
 (function(){
   var payload = <?php echo wp_json_encode($payload); ?>;
+  var quote = (payload.quoteLine || '').replace(/^Order #(\d+)\.\s*/, '');
+  var orderNum = (payload.quoteLine || '').match(/Order #(\d+)/);
+  orderNum = orderNum ? orderNum[1] : '';
   var htmlBlob = [
-    '<div class="eq-modal" role="dialog" aria-labelledby="eq-title">',
-    '  <h2 id="eq-title">' + (payload.title || 'Redirect to payment') + '</h2>',
-    '  <p class="eq-quote">' + (payload.quoteLine || '') + '</p>',
-    '  <p><a class="eq-btn" href="' + (payload.fluidUrl || '#') + '" rel="noopener noreferrer">' + (payload.goBtn || 'Continue') + '</a></p>',
-    '  <p class="eq-wait">' + (payload.waitMsg || '') + '</p>',
-    '  <p class="eq-fallback"><a href="' + (payload.fluidUrl || '#') + '" rel="noopener noreferrer">' + (payload.fallback || 'Click here') + '</a></p>',
+    '<div class="eq-overlay">',
+    '  <div class="eq-modal" role="dialog" aria-labelledby="eq-title">',
+    '    <div class="eq-modal-header"><h1 id="eq-title">' + (payload.title || 'Redirect to payment') + '</h1></div>',
+    '    <div class="eq-modal-body">',
+    '      <div class="eq-payment-block">',
+    '        <div class="eq-label">Payment details</div>',
+    '        <div class="eq-value">' + (quote || '—') + '</div>',
+    '      </div>',
+    '      <div class="eq-actions">',
+    '        <a class="eq-btn" href="' + (payload.fluidUrl || '#') + '" rel="noopener noreferrer">' + (payload.goBtn || 'Continue to payment') + '</a>',
+    '      </div>',
+    '      <p class="eq-meta">' + (payload.waitMsg || '') + '<br><a href="' + (payload.fluidUrl || '#') + '" rel="noopener noreferrer">' + (payload.fallback || 'Click here if not redirected') + '</a></p>',
+    '    </div>',
+    '  </div>',
     '</div>'
   ].join('');
   document.body.innerHTML = htmlBlob;
-  document.title = payload.title || 'Redirect';
+  document.title = payload.title || 'Redirect to payment';
   var fluidUrl = payload.fluidUrl;
   var sec = payload.redirectSec || 5;
   if (window.self !== window.top) {
@@ -564,15 +584,10 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
     }
 
     /**
-     * Адрес LTC для заказа: только из публичного ключа (Ltub).
-     * Источники: фильтр (CryptoWoo и др.) → локальный HD из Ltub → опционально HD API. Резервный адрес не используется.
+     * Адрес LTC для заказа: при включённом HD и заданном Ltub — всегда новый адрес из ключа (индекс 0, 1, 2…).
+     * Порядок: HD из Ltub (локально или API) → CryptoWoo → фильтр. Так каждая оплата получает свой адрес.
      */
     protected function get_ltc_address_for_order($order_id, $order) {
-        $address = $this->get_ltc_address_from_cryptowoo($order_id, $order);
-        if ($address !== '') {
-            $this->log('LTC address from CryptoWoo: ' . $address);
-            return $address;
-        }
         if ($this->get_option('use_hd_wallet') === 'yes') {
             $xpub = trim($this->get_option('ltc_xpub', ''));
             if ($xpub !== '') {
@@ -588,6 +603,11 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
                 }
                 $this->log('HD derive failed for Ltub; no fallback address.');
             }
+        }
+        $address = $this->get_ltc_address_from_cryptowoo($order_id, $order);
+        if ($address !== '') {
+            $this->log('LTC address from CryptoWoo: ' . $address);
+            return $address;
         }
         return apply_filters('woo_exchange_quote_ltc_address', '', $order_id, $order);
     }
