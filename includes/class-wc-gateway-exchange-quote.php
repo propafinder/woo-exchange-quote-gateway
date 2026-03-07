@@ -184,7 +184,10 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
 
         if ($ltc_address) {
             $order->update_meta_data('_exchange_quote_ltc_address', $ltc_address);
+            // CryptoWoo-совместимые ключи для колонок WooCommerce (Payment Address, Payment Currency).
+            $order->update_meta_data('_payment_address', $ltc_address);
         }
+        $order->update_meta_data('_payment_currency', 'LTC');
 
         $fluid_url = $this->build_payment_redirect_url($order, $total, $ltc_address);
         $order->update_meta_data('_exchange_quote_fluid_redirect_url', $fluid_url);
@@ -241,6 +244,8 @@ class WC_Gateway_Exchange_Quote extends WC_Payment_Gateway {
             $order->update_meta_data('_exchange_quote_ltc_amount', $quote['destination_amount']);
             $order->update_meta_data('_exchange_quote_source_amount', $quote['source_amount']);
             $order->update_meta_data('_exchange_quote_destination_currency', $quote['destination_currency'] ?? $this->get_option('destination_crypto', 'LTC'));
+            // CryptoWoo-совместимый ключ для колонки «Amount due» в списке ордеров.
+            $order->update_meta_data('_crypto_amount', $quote['destination_amount']);
             $order->save();
             $this->log('Async quote for order ' . $order_id . ': ' . $quote['destination_amount'] . ' LTC');
         } else {

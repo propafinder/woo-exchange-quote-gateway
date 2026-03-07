@@ -83,6 +83,9 @@ class WC_Exchange_Quote_Verifier {
             $balance = $use_unconfirmed ? ($received['confirmed'] + $received['unconfirmed']) : $received['confirmed'];
             $tolerance = 0.00001;
             if ($balance >= $expected_float - $tolerance) {
+                // CryptoWoo-совместимый ключ для колонки «Amount received» в списке ордеров.
+                $order->update_meta_data('_crypto_amount_received', $balance);
+                $order->save();
                 // Сумма подтверждена — переводим on-hold → pending (ждёт обработки).
                 $order->update_status('pending', sprintf(
                     __('Оплата LTC подтверждена. Ожидалось: %s LTC, получено (confirmed: %s, unconfirmed: %s).', 'woo-exchange-quote-gateway'),
