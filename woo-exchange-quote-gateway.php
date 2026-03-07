@@ -23,6 +23,13 @@ define('WOO_EXCHANGE_QUOTE_GATEWAY_GITHUB_REPO', 'https://github.com/propafinder
 require_once __DIR__ . '/includes/class-wc-exchange-quote-updater.php';
 WC_Exchange_Quote_Updater::init();
 
+// Декларация совместимости с HPOS (High-Performance Order Storage) и другими фичами WooCommerce.
+add_action('before_woocommerce_init', function () {
+    if (class_exists('\Automattic\WooCommerce\Utilities\FeaturesUtil')) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+    }
+});
+
 // Регистрация шлюза при загрузке WooCommerce
 add_action('plugins_loaded', 'woo_exchange_quote_gateway_init', 11);
 
@@ -151,13 +158,18 @@ function woo_exchange_quote_clear_update_cache() {
 }
 
 /**
- * Тестовый ордер (ручные параметры, без API/генерации):
- * /wp-admin/admin.php?action=eq_test_order&amount=3&ltc_address=LxxYYY&ltc_amount=0.05
+ * Тестовый ордер (только при WP_DEBUG, ручные параметры, без API/генерации).
+ * Ссылку генерировать через wp_nonce_url().
  */
-add_action('admin_action_eq_test_order', 'woo_exchange_quote_test_order');
+if (defined('WP_DEBUG') && WP_DEBUG) {
+    add_action('admin_action_eq_test_order', 'woo_exchange_quote_test_order');
+}
 function woo_exchange_quote_test_order() {
     if (!current_user_can('manage_woocommerce')) {
         wp_die('Access denied.');
+    }
+    if (!wp_verify_nonce(isset($_GET['_wpnonce']) ? $_GET['_wpnonce'] : '', 'eq_test_order')) {
+        wp_die('Invalid or missing nonce. Use: wp_nonce_url(admin_url("admin.php?action=eq_test_order&..."), "eq_test_order")');
     }
     if (!class_exists('WooCommerce')) {
         wp_die('WooCommerce not loaded.');
@@ -169,9 +181,9 @@ function woo_exchange_quote_test_order() {
 
     if ($amount <= 0 || $ltc_address === '' || $ltc_amount <= 0) {
         wp_die(
-            '<h3>Usage</h3>' .
-            '<code>/wp-admin/admin.php?action=eq_test_order&amount=3&ltc_address=YOUR_LTC_ADDRESS&ltc_amount=0.05</code>' .
-            '<p><b>amount</b> — сумма в GBP<br><b>ltc_address</b> — LTC-адрес для проверки<br><b>ltc_amount</b> — ожидаемая сумма LTC</p>'
+            '<h3>Usage (WP_DEBUG only)</h3>' .
+            '<p>Generate link in PHP: <code>wp_nonce_url(admin_url("admin.php?action=eq_test_order&amount=3&ltc_address=ADDR&ltc_amount=0.05"), "eq_test_order")</code></p>' .
+            '<p><b>amount</b> — сумма в GBP<br><b>ltc_address</b> — LTC-адрес<br><b>ltc_amount</b> — ожидаемая сумма LTC</p>'
         );
     }
 

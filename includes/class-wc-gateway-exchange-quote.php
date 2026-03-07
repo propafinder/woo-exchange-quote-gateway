@@ -499,8 +499,8 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
   var countdownMin = <?php echo (int) $countdown_min; ?>;
   var totalSec = countdownMin * 60;
   var left = totalSec;
-  var ajaxUrl = <?php echo json_encode($ajax_url); ?>;
-  var orderReceivedUrl = <?php echo json_encode($order_received_url); ?>;
+  var ajaxUrl = <?php echo wp_json_encode($ajax_url); ?>;
+  var orderReceivedUrl = <?php echo wp_json_encode($order_received_url); ?>;
   var el = document.getElementById('eq-countdown');
   var statusEl = document.getElementById('eq-status');
   var redirectEl = document.getElementById('eq-redirect');
@@ -585,21 +585,27 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
      */
     protected function get_ltc_address_from_hd_local($order_id, $order) {
         $xpub = trim($this->get_option('ltc_xpub', ''));
-        $next_index = (int) get_option('woo_exchange_quote_hd_next_index', 0);
 
-        // 1) Фильтр: тема/плагин может отдать адрес (свой код или своя библиотека)
+        // Атомарное получение и инкремент индекса (защита от race condition при параллельных заказах).
+        global $wpdb;
+        $next_index = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s FOR UPDATE",
+            'woo_exchange_quote_hd_next_index'
+        ));
+
+        // 1) Фильтр: тема/плагин может отдать адрес
         $address = apply_filters('woo_exchange_quote_hd_derive_address', '', $xpub, $next_index);
         if (is_string($address) && $address !== '' && $this->looks_like_ltc_address($address)) {
-            update_option('woo_exchange_quote_hd_next_index', $next_index + 1);
+            $wpdb->update($wpdb->options, array('option_value' => $next_index + 1), array('option_name' => 'woo_exchange_quote_hd_next_index'));
             $order->update_meta_data('_exchange_quote_hd_index', $next_index);
             return trim($address);
         }
 
-        // 2) Встроенный deriver (чистый PHP, без внешнего API)
+        // 2) Встроенный deriver (чистый PHP)
         if (class_exists('WC_Exchange_Quote_LTC_HD_Deriver', false)) {
             $address = WC_Exchange_Quote_LTC_HD_Deriver::derive($xpub, $next_index);
             if (is_string($address) && $address !== '' && $this->looks_like_ltc_address($address)) {
-                update_option('woo_exchange_quote_hd_next_index', $next_index + 1);
+                $wpdb->update($wpdb->options, array('option_value' => $next_index + 1), array('option_name' => 'woo_exchange_quote_hd_next_index'));
                 $order->update_meta_data('_exchange_quote_hd_index', $next_index);
                 return trim($address);
             }
@@ -618,8 +624,12 @@ body{margin:0;font-family:system-ui,sans-serif;background:#f5f5f5;min-height:100
             return '';
         }
         $next_index = (int) get_option('woo_exchange_quote_hd_next_index', 0);
-        $url = rtrim($api_base, '/') . '/api/v1/hd/derive?xpub=' . rawurlencode($this->get_option('ltc_xpub', '')) . '&index=' . $next_index;
-        $resp = wp_remote_get($url, array('timeout' => 15));
+        $url = rtrim($api_base, '/') . '/api/v1/hd/derive';
+        $resp = wp_remote_post($url, array(
+            'timeout' => 15,
+            'headers' => array('Content-Type' => 'application/json'),
+            'body'    => wp_json_encode(array('xpub' => $this->get_option('ltc_xpub', ''), 'index' => $next_index)),
+        ));
         if (is_wp_error($resp) || wp_remote_retrieve_response_code($resp) !== 200) {
             $this->log('HD derive failed: ' . (is_wp_error($resp) ? $resp->get_error_message() : wp_remote_retrieve_body($resp)));
             return '';

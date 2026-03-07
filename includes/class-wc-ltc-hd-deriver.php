@@ -224,8 +224,9 @@ class WC_Exchange_Quote_LTC_HD_Deriver {
         $y2 = self::bigint_mul($y, $y);
         $y2 = self::bigint_mod($y2, $p);
         $inv_2y = self::bigint_invert(self::bigint_mul($y, '2'), $p);
+        // secp256k1: a=0, slope = 3x² / (2y). Параметр b=7 НЕ участвует в формуле удвоения.
         $three_x2 = self::bigint_mul(self::bigint_mul($x, $x), '3');
-        $s = self::bigint_mod(self::bigint_mul(self::bigint_add($three_x2, '7'), $inv_2y), $p);
+        $s = self::bigint_mod(self::bigint_mul($three_x2, $inv_2y), $p);
         $s2 = self::bigint_mul($s, $s);
         $x3 = self::bigint_mod(self::bigint_sub(self::bigint_sub($s2, self::bigint_mul($x, '2')), $p), $p);
         $y3 = self::bigint_mod(self::bigint_sub(self::bigint_mul($s, self::bigint_sub($x, $x3)), $y), $p);
