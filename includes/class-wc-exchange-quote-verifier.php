@@ -83,7 +83,8 @@ class WC_Exchange_Quote_Verifier {
             $balance = $use_unconfirmed ? ($received['confirmed'] + $received['unconfirmed']) : $received['confirmed'];
             $tolerance = 0.00001;
             if ($balance >= $expected_float - $tolerance) {
-                // CryptoWoo-совместимый ключ для колонки «Amount received» в списке ордеров.
+                // Ключи для колонки «Amount received» в списке ордеров.
+                $order->update_meta_data('crypto_amount_received', $balance);
                 $order->update_meta_data('_crypto_amount_received', $balance);
                 $order->save();
                 // Сумма подтверждена — переводим on-hold → pending (ждёт обработки).

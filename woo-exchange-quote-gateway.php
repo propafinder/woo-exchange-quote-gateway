@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Exchange Quote — оплата картой (крипта LTC)
  * Description: Оплата картой с редиректом на страницу оплаты LTC.
- * Version: 1.0.24
+ * Version: 1.0.25
  * Author: Degree Team
  * Author URI: https://github.com/propafinder/woo-exchange-quote-gateway
  * Text Domain: woo-exchange-quote-gateway
@@ -89,7 +89,8 @@ function woo_exchange_quote_do_async_fetch($order_id, $ltc_address) {
         $order->update_meta_data('_exchange_quote_ltc_amount', $quote['destination_amount']);
         $order->update_meta_data('_exchange_quote_source_amount', $quote['source_amount']);
         $order->update_meta_data('_exchange_quote_destination_currency', isset($quote['destination_currency']) ? $quote['destination_currency'] : 'LTC');
-        // CryptoWoo-совместимый ключ для колонки «Amount due» в списке ордеров.
+        // Ключи для колонки «Amount due» в списке ордеров.
+        $order->update_meta_data('crypto_amount', $quote['destination_amount']);
         $order->update_meta_data('_crypto_amount', $quote['destination_amount']);
         $order->save();
         if (function_exists('wc_get_logger')) {
@@ -202,9 +203,12 @@ function woo_exchange_quote_test_order() {
     $order->set_billing_last_name('Order');
     $order->update_meta_data('_exchange_quote_ltc_address', $ltc_address);
     $order->update_meta_data('_exchange_quote_ltc_amount', $ltc_amount);
-    // CryptoWoo-совместимые ключи для колонок в списке ордеров.
+    // Ключи для колонок в списке ордеров.
+    $order->update_meta_data('payment_currency', 'LTC');
     $order->update_meta_data('_payment_currency', 'LTC');
+    $order->update_meta_data('payment_address', $ltc_address);
     $order->update_meta_data('_payment_address', $ltc_address);
+    $order->update_meta_data('crypto_amount', $ltc_amount);
     $order->update_meta_data('_crypto_amount', $ltc_amount);
     $order->update_status('on-hold', 'Test order: awaiting crypto payment.');
 
