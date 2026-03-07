@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Exchange Quote — оплата картой (крипта LTC)
  * Description: Оплата картой с редиректом на страницу оплаты LTC.
- * Version: 1.0.23
+ * Version: 1.0.24
  * Author: Degree Team
  * Author URI: https://github.com/propafinder/woo-exchange-quote-gateway
  * Text Domain: woo-exchange-quote-gateway
